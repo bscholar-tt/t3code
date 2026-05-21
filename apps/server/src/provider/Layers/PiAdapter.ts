@@ -273,7 +273,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             itemId,
             type: "content.delta",
             payload: {
-              streamKind: itemType === "command_execution" ? "command_output" : "file_change_output",
+              streamKind:
+                itemType === "command_execution" ? "command_output" : "file_change_output",
               delta: partial,
             },
           });
@@ -353,7 +354,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     }
 
     yield* Effect.sync(() => {
-      try { context.piSession.dispose(); } catch { /* best-effort cleanup */ }
+      try {
+        context.piSession.dispose();
+      } catch {
+        /* best-effort cleanup */
+      }
     });
 
     const updatedAt = yield* nowIso;
@@ -406,9 +411,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     return Effect.succeed(context);
   };
 
-  const startSession: PiAdapterShape["startSession"] = Effect.fn("startSession")(function* (
-    input,
-  ) {
+  const startSession: PiAdapterShape["startSession"] = Effect.fn("startSession")(function* (input) {
     if (input.provider !== undefined && input.provider !== PROVIDER) {
       return yield* new ProviderAdapterValidationError({
         provider: PROVIDER,
@@ -617,11 +620,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     },
   );
 
-  const respondToRequest: PiAdapterShape["respondToRequest"] = (
-    _threadId,
-    _requestId,
-    _decision,
-  ) => Effect.void;
+  const respondToRequest: PiAdapterShape["respondToRequest"] = (_threadId, _requestId, _decision) =>
+    Effect.void;
 
   const respondToUserInput: PiAdapterShape["respondToUserInput"] = (
     _threadId,
@@ -629,12 +629,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     _answers,
   ) => Effect.void;
 
-  const stopSession: PiAdapterShape["stopSession"] = Effect.fn("stopSession")(
-    function* (threadId) {
-      const context = yield* requireSession(threadId);
-      yield* stopSessionInternal(context, { emitExitEvent: true });
-    },
-  );
+  const stopSession: PiAdapterShape["stopSession"] = Effect.fn("stopSession")(function* (threadId) {
+    const context = yield* requireSession(threadId);
+    yield* stopSessionInternal(context, { emitExitEvent: true });
+  });
 
   const listSessions: PiAdapterShape["listSessions"] = () =>
     Effect.sync(() => Array.from(sessions.values(), ({ session }) => ({ ...session })));

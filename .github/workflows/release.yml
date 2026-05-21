@@ -446,4 +446,3 @@ jobs:
             release-assets/*.yml
           fail_on_unmatched_files: true
           token: ${{ steps.app_token.outputs.token }}
-

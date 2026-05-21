@@ -8,7 +8,6 @@ import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-
 import { makePiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
 import { ProviderDriverError } from "../Errors.ts";

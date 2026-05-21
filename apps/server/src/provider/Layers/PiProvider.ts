@@ -187,8 +187,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
         version: null,
         status: "error",
         auth: { status: "unknown" },
-        message:
-          "Pi Agent CLI is installed but failed to run. Timed out while running command.",
+        message: "Pi Agent CLI is installed but failed to run. Timed out while running command.",
       },
     });
   }
@@ -227,9 +226,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   });
 });
 
-export const makePendingPiProvider = (
-  piSettings: PiSettings,
-): Effect.Effect<ServerProviderDraft> =>
+export const makePendingPiProvider = (piSettings: PiSettings): Effect.Effect<ServerProviderDraft> =>
   Effect.gen(function* () {
     const checkedAt = yield* nowIso;
     const models = providerModelsFromSettings(
