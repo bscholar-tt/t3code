@@ -297,9 +297,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       }
 
       case "turn_end": {
-        if (context.turnState) {
-          yield* completeTurn(context, "completed");
-        }
+        // Pi fires turn_end after each internal LLM call, but agent_end fires
+        // after the full agent run. Completing here would fragment the Pi run
+        // into multiple t3code turns, causing tool activities to disappear and
+        // the timer to reset on every sub-turn. Let agent_end drive completion.
         return;
       }
 
