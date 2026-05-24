@@ -83,13 +83,20 @@ function readPiResumeState(resumeCursor: unknown): { sessionFile: string } | und
 
 function classifyToolItemType(toolName: string): CanonicalItemType {
   const normalized = toolName.toLowerCase();
-  if (normalized.includes("agent") || normalized.includes("subagent")) {
+  if (
+    normalized.includes("agent") ||
+    normalized.includes("subagent") ||
+    normalized.includes("sub-agent") ||
+    normalized === "task" ||
+    normalized === "skill"
+  ) {
     return "collab_agent_tool_call";
   }
   if (
     normalized.includes("bash") ||
     normalized.includes("shell") ||
     normalized.includes("command") ||
+    normalized.includes("terminal") ||
     normalized.includes("exec")
   ) {
     return "command_execution";
@@ -97,13 +104,23 @@ function classifyToolItemType(toolName: string): CanonicalItemType {
   if (
     normalized.includes("edit") ||
     normalized.includes("write") ||
+    normalized.includes("file") ||
     normalized.includes("patch") ||
-    normalized.includes("apply")
+    normalized.includes("apply") ||
+    normalized.includes("replace") ||
+    normalized.includes("create") ||
+    normalized.includes("delete")
   ) {
     return "file_change";
   }
-  if (normalized.includes("search") || normalized.includes("web")) {
+  if (normalized.includes("mcp")) {
+    return "mcp_tool_call";
+  }
+  if (normalized.includes("websearch") || normalized.includes("web search")) {
     return "web_search";
+  }
+  if (normalized.includes("image")) {
+    return "image_view";
   }
   return "dynamic_tool_call";
 }
@@ -117,9 +134,25 @@ function summarizePiToolArgs(args: unknown): string | undefined {
     return commandValue.trim().slice(0, 400);
   }
 
+  const skillValue = input.skill ?? input.skillName;
+  if (typeof skillValue === "string" && skillValue.trim().length > 0) {
+    const skillArgs = typeof input.args === "string" ? input.args.trim() : undefined;
+    return skillArgs ? `${skillValue.trim()} ${skillArgs}`.slice(0, 400) : skillValue.trim();
+  }
+
+  const descValue = input.description ?? input.prompt;
+  if (typeof descValue === "string" && descValue.trim().length > 0) {
+    return descValue.trim().slice(0, 400);
+  }
+
   const pathValue = input.file_path ?? input.path ?? input.filePath;
   if (typeof pathValue === "string" && pathValue.trim().length > 0) {
     return pathValue.trim().slice(0, 400);
+  }
+
+  const patternValue = input.pattern ?? input.query;
+  if (typeof patternValue === "string" && patternValue.trim().length > 0) {
+    return patternValue.trim().slice(0, 400);
   }
 
   try {
