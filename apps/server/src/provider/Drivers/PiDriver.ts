@@ -97,6 +97,8 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
 
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const path = yield* Path.Path;
+      const fs = yield* FileSystem.FileSystem;
+      const serverConfig = yield* ServerConfig;
 
       const adapter = yield* makePiAdapter(effectiveConfig, {
         instanceId,
@@ -104,9 +106,10 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       });
       const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
 
-      const checkProvider = checkPiProviderStatus(effectiveConfig, processEnv).pipe(
+      const checkProvider = checkPiProviderStatus(effectiveConfig, serverConfig.cwd, processEnv).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, path),
       );
 

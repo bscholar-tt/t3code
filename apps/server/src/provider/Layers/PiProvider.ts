@@ -2,10 +2,12 @@ import {
   type PiSettings,
   type ModelCapabilities,
   type ServerProviderModel,
+  type ServerProviderSkill,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
@@ -23,7 +25,7 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
-import { makePiEnvironment } from "../Drivers/PiHome.ts";
+import { makePiEnvironment, resolvePiHomePath } from "../Drivers/PiHome.ts";
 
 const DEFAULT_PI_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -120,13 +122,137 @@ const runPiCommand = Effect.fn("runPiCommand")(function* (
 
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
+function parseSkillFrontmatter(content: string): {
+  name?: string;
+  description?: string;
+} {
+  const match = /^---\s*\n([\s\S]*?)\n---/.exec(content);
+  if (!match?.[1]) return {};
+  const yaml = match[1];
+  const result: { name?: string; description?: string } = {};
+  for (const line of yaml.split("\n")) {
+    const kvMatch = /^(\w[\w-]*):\s*(.+)$/.exec(line.trim());
+    if (!kvMatch) continue;
+    const key = kvMatch[1];
+    const rawValue = kvMatch[2] ?? "";
+    const value = rawValue.replace(/^["']|["']$/g, "").trim();
+    if (key === "name" && value.length > 0) result.name = value;
+    if (key === "description" && value.length > 0) result.description = value;
+  }
+  return result;
+}
+
+function skillNameFromPath(filePath: string, pathSep: string): string {
+  const base = filePath.split(pathSep).pop() ?? filePath;
+  return base.replace(/\.md$/i, "");
+}
+
+const scanSkillDir = Effect.fn("scanSkillDir")(function* (
+  dir: string,
+  scope: string,
+): Effect.fn.Return<
+  ServerProviderSkill[],
+  never,
+  FileSystem.FileSystem | Path.Path
+> {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const skills: ServerProviderSkill[] = [];
+
+  const exists = yield* fs.exists(dir).pipe(Effect.orElseSucceed(() => false));
+  if (!exists) return skills;
+
+  const entries = yield* fs.readDirectory(dir).pipe(Effect.orElseSucceed(() => [] as string[]));
+
+  for (const entry of entries) {
+    const entryPath = path.join(dir, entry);
+    const stat = yield* fs.stat(entryPath).pipe(Effect.orElseSucceed(() => undefined));
+    if (!stat) continue;
+
+    if (stat.type === "Directory") {
+      const skillMdPath = path.join(entryPath, "SKILL.md");
+      const hasSkillMd = yield* fs.exists(skillMdPath).pipe(Effect.orElseSucceed(() => false));
+      if (hasSkillMd) {
+        const content = yield* fs
+          .readFileString(skillMdPath)
+          .pipe(Effect.orElseSucceed(() => ""));
+        const frontmatter = parseSkillFrontmatter(content);
+        const name = frontmatter.name ?? entry;
+        skills.push({
+          name,
+          path: skillMdPath,
+          enabled: true,
+          ...(scope ? { scope } : {}),
+          ...(frontmatter.description ? { description: frontmatter.description } : {}),
+          ...(frontmatter.name ? { displayName: frontmatter.name } : {}),
+        });
+      }
+      continue;
+    }
+
+    if (entry.endsWith(".md")) {
+      const content = yield* fs
+        .readFileString(entryPath)
+        .pipe(Effect.orElseSucceed(() => ""));
+      const frontmatter = parseSkillFrontmatter(content);
+      const name = frontmatter.name ?? skillNameFromPath(entry, path.sep);
+      skills.push({
+        name,
+        path: entryPath,
+        enabled: true,
+        ...(scope ? { scope } : {}),
+        ...(frontmatter.description ? { description: frontmatter.description } : {}),
+        ...(frontmatter.name ? { displayName: frontmatter.name } : {}),
+      });
+    }
+  }
+
+  return skills;
+});
+
+const discoverPiSkills = Effect.fn("discoverPiSkills")(function* (
+  cwd: string,
+  piSettings: PiSettings,
+): Effect.fn.Return<
+  ReadonlyArray<ServerProviderSkill>,
+  never,
+  FileSystem.FileSystem | Path.Path
+> {
+  const path = yield* Path.Path;
+  const piHomePath = yield* resolvePiHomePath(piSettings);
+
+  const dirs: Array<{ dir: string; scope: string }> = [
+    { dir: path.join(cwd, ".pi", "skills"), scope: "project" },
+    { dir: path.join(cwd, ".claude", "skills"), scope: "project" },
+    { dir: path.join(piHomePath, ".pi", "agent", "skills"), scope: "user" },
+  ];
+
+  const results = yield* Effect.all(
+    dirs.map(({ dir, scope }) => scanSkillDir(dir, scope)),
+    { concurrency: "unbounded" },
+  );
+
+  const seen = new Set<string>();
+  const deduped: ServerProviderSkill[] = [];
+  for (const batch of results) {
+    for (const skill of batch) {
+      if (!seen.has(skill.name)) {
+        seen.add(skill.name);
+        deduped.push(skill);
+      }
+    }
+  }
+  return deduped;
+});
+
 export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function* (
   piSettings: PiSettings,
+  cwd: string,
   environment: NodeJS.ProcessEnv = process.env,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
-  ChildProcessSpawner.ChildProcessSpawner | Path.Path
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
 > {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   const allModels = providerModelsFromSettings(
@@ -212,11 +338,16 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     });
   }
 
+  const skills = yield* discoverPiSkills(cwd, piSettings).pipe(
+    Effect.orElseSucceed(() => [] as ServerProviderSkill[]),
+  );
+
   return buildServerProvider({
     presentation: PI_PRESENTATION,
     enabled: piSettings.enabled,
     checkedAt,
     models: allModels,
+    skills,
     probe: {
       installed: true,
       version: parsedVersion,
