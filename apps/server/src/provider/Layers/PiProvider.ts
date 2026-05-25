@@ -173,16 +173,16 @@ const scanSkillDir = Effect.fn("scanSkillDir")(function* (
       const skillMdPath = path.join(entryPath, "SKILL.md");
       const hasSkillMd = yield* fs.exists(skillMdPath).pipe(Effect.orElseSucceed(() => false));
       if (hasSkillMd) {
-        const content = yield* fs
-          .readFileString(skillMdPath)
-          .pipe(Effect.orElseSucceed(() => ""));
+        const content = yield* fs.readFileString(skillMdPath).pipe(
+          Effect.orElseSucceed(() => ""),
+        );
         const frontmatter = parseSkillFrontmatter(content);
         const name = frontmatter.name ?? entry;
         skills.push({
           name,
           path: skillMdPath,
           enabled: true,
-          ...(scope ? { scope } : {}),
+          scope,
           ...(frontmatter.description ? { description: frontmatter.description } : {}),
           ...(frontmatter.name ? { displayName: frontmatter.name } : {}),
         });
@@ -191,9 +191,9 @@ const scanSkillDir = Effect.fn("scanSkillDir")(function* (
     }
 
     if (entry.endsWith(".md")) {
-      const content = yield* fs
-        .readFileString(entryPath)
-        .pipe(Effect.orElseSucceed(() => ""));
+      const content = yield* fs.readFileString(entryPath).pipe(
+        Effect.orElseSucceed(() => ""),
+      );
       const frontmatter = parseSkillFrontmatter(content);
       const name = frontmatter.name ?? skillNameFromPath(entry, path.sep);
       skills.push({
