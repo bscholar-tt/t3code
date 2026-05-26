@@ -1,9 +1,6 @@
 import {
-  createAgentSession,
-  SessionManager,
-  type AgentSession,
   type AgentSessionEvent,
-  type CreateAgentSessionOptions,
+  type RpcCommand,
 } from "@earendil-works/pi-coding-agent";
 import {
   type CanonicalItemType,
@@ -22,17 +19,20 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Random from "effect/Random";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { ServerConfig } from "../../config.ts";
 import { makePiEnvironment } from "../Drivers/PiHome.ts";
 import {
   ProviderAdapterProcessError,
-  ProviderAdapterRequestError,
   ProviderAdapterSessionClosedError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
@@ -57,9 +57,10 @@ interface PiTurnState {
 
 interface PiSessionContext {
   session: ProviderSession;
-  piSession: AgentSession;
-  unsubscribe: (() => void) | undefined;
-  streamFiber: Fiber.Fiber<void, never> | undefined;
+  readonly sessionScope: Scope.Closeable;
+  writeCommand: (cmd: RpcCommand) => Effect.Effect<void>;
+  stdoutFiber: Fiber.Fiber<void, never> | undefined;
+  readonly pendingRequests: Map<string, Deferred.Deferred<unknown, never>>;
   readonly startedAt: string;
   turnState: PiTurnState | undefined;
   readonly turns: Array<{ id: TurnId; items: Array<PiToolItem> }>;
@@ -125,6 +126,16 @@ function classifyToolItemType(toolName: string): CanonicalItemType {
   return "dynamic_tool_call";
 }
 
+function tryParseJsonObject(text: string): Record<string, unknown> | null {
+  try {
+    // eslint-disable-next-line no-restricted-syntax -- non-Effect context, no schema needed
+    const v = JSON.parse(text) as unknown; // @effect-diagnostics-ignore preferSchemaOverJson
+    return v !== null && typeof v === "object" ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
 function summarizePiToolArgs(args: unknown): string | undefined {
   if (!args || typeof args !== "object") return undefined;
   const input = args as Record<string, unknown>;
@@ -176,6 +187,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("piAgent");
   const serverConfig = yield* ServerConfig;
   const piEnvironment = yield* makePiEnvironment(piSettings, options?.environment);
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
   const sessions = new Map<ThreadId, PiSessionContext>();
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
@@ -392,7 +404,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
       case "agent_end": {
         if (context.turnState) {
-          yield* completeTurn(context, event.willRetry ? "interrupted" : "completed");
+          const willRetry = "willRetry" in event ? Boolean(event.willRetry) : false;
+          yield* completeTurn(context, willRetry ? "interrupted" : "completed");
         }
         return;
       }
@@ -401,7 +414,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         yield* offerRuntimeEvent({
           ...base,
           type: "session.state.changed",
-          payload: { state: "waiting", reason: `compaction:${event.reason}` },
+          payload: {
+            state: "waiting",
+            reason: `compaction:${"reason" in event ? String(event.reason) : "unknown"}`,
+          },
         });
         return;
       }
@@ -420,6 +436,30 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     }
   });
 
+  const handleStdoutLine = Effect.fn("handleStdoutLine")(function* (
+    context: PiSessionContext,
+    line: string,
+  ) {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+
+    const msg = tryParseJsonObject(trimmed);
+    if (!msg) return;
+
+    if (msg["type"] === "response") {
+      if (typeof msg["id"] === "string") {
+        const deferred = context.pendingRequests.get(msg["id"]);
+        if (deferred) {
+          context.pendingRequests.delete(msg["id"]);
+          yield* Deferred.succeed(deferred, msg);
+        }
+      }
+      return;
+    }
+
+    yield* handlePiEvent(context, msg as AgentSessionEvent);
+  });
+
   const stopSessionInternal = Effect.fn("stopSessionInternal")(function* (
     context: PiSessionContext,
     options?: { readonly emitExitEvent?: boolean },
@@ -431,18 +471,12 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       yield* completeTurn(context, "interrupted", "Session stopped.");
     }
 
-    if (context.unsubscribe) {
-      context.unsubscribe();
-      context.unsubscribe = undefined;
+    if (context.stdoutFiber) {
+      yield* Fiber.interrupt(context.stdoutFiber);
+      context.stdoutFiber = undefined;
     }
 
-    yield* Effect.sync(() => {
-      try {
-        context.piSession.dispose();
-      } catch {
-        /* best-effort cleanup */
-      }
-    });
+    yield* Effect.ignore(Scope.close(context.sessionScope, Exit.void));
 
     const updatedAt = yield* nowIso;
     context.session = {
@@ -522,36 +556,47 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         ? input.modelSelection
         : undefined;
 
-    const runtimeContext = yield* Effect.context<never>();
-    const runFork = Effect.runForkWith(runtimeContext);
-
     const piResumeState = readPiResumeState(input.resumeCursor);
     const baseCwd = input.cwd ?? serverConfig.cwd;
 
-    const piSession = yield* Effect.tryPromise({
-      try: async () => {
-        if (piResumeState) {
-          try {
-            const sessionManager = SessionManager.open(piResumeState.sessionFile);
-            const result = await createAgentSession({ cwd: baseCwd, sessionManager });
-            return result.session;
-          } catch {
-            // Session file inaccessible; fall through to a fresh session.
-          }
-        }
-        const result = await createAgentSession({ cwd: baseCwd });
-        return result.session;
-      },
-      catch: (cause) =>
-        new ProviderAdapterProcessError({
-          provider: PROVIDER,
-          threadId,
-          detail: toMessage(cause, "Failed to start Pi Agent session."),
-          cause,
-        }),
-    });
+    const spawnArgs: string[] = ["--mode", "rpc"];
+    if (piResumeState) {
+      spawnArgs.push("--session", piResumeState.sessionFile);
+    }
+    if (modelSelection?.model) {
+      spawnArgs.push("--model", modelSelection.model);
+    }
 
-    const piSessionFile = piSession.sessionFile;
+    const sessionScope = yield* Scope.make();
+
+    const child = yield* spawner
+      .spawn(
+        ChildProcess.make(piSettings.binaryPath || "pi", spawnArgs, {
+          env: piEnvironment,
+          cwd: baseCwd,
+          shell: false,
+        }),
+      )
+      .pipe(
+        Effect.provideService(Scope.Scope, sessionScope),
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId,
+              detail: toMessage(cause, "Failed to start Pi Agent RPC process."),
+              cause,
+            }),
+        ),
+        Effect.onError(() => Effect.ignore(Scope.close(sessionScope, Exit.void))),
+      );
+
+    const outgoingQueue = yield* Queue.unbounded<Uint8Array>();
+
+    const writeCommand = (cmd: RpcCommand): Effect.Effect<void> =>
+      Queue.offer(outgoingQueue, Buffer.from(JSON.stringify(cmd) + "\n")).pipe(Effect.asVoid);
+
+    const pendingRequests = new Map<string, Deferred.Deferred<unknown, never>>();
 
     const session: ProviderSession = {
       threadId,
@@ -561,16 +606,16 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       runtimeMode: input.runtimeMode,
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(modelSelection?.model ? { model: modelSelection.model } : {}),
-      ...(piSessionFile !== undefined ? { resumeCursor: { sessionFile: piSessionFile } } : {}),
       createdAt: startedAt,
       updatedAt: startedAt,
     };
 
     const context: PiSessionContext = {
       session,
-      piSession,
-      unsubscribe: undefined,
-      streamFiber: undefined,
+      sessionScope,
+      writeCommand,
+      stdoutFiber: undefined,
+      pendingRequests,
       startedAt,
       turnState: undefined,
       turns: [],
@@ -578,11 +623,72 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     };
     sessions.set(threadId, context);
 
-    const unsubscribe = piSession.subscribe((event: AgentSessionEvent) => {
-      if (context.stopped) return;
-      runFork(handlePiEvent(context, event));
-    });
-    context.unsubscribe = unsubscribe;
+    const runtimeContext = yield* Effect.context<never>();
+    const runFork = Effect.runForkWith(runtimeContext);
+
+    // Fork stdin writer — continuously drains the outgoing queue to the process stdin
+    runFork(
+      Stream.fromQueue(outgoingQueue).pipe(
+        Stream.run(child.stdin),
+        Effect.ignore,
+      ),
+    );
+
+    // Fork stdout reader — parses JSONL events and routes them
+    const stdoutFiber = runFork(
+      child.stdout.pipe(
+        Stream.decodeText(),
+        Stream.splitLines,
+        Stream.mapEffect((line) => handleStdoutLine(context, line)),
+        Stream.runDrain,
+        Effect.ignore,
+        // Emit session exit if the process dies while the session is still active
+        Effect.ensuring(
+          Effect.suspend(() => {
+            if (!context.stopped && context.session.status !== "closed") {
+              return stopSessionInternal(context, { emitExitEvent: true });
+            }
+            return Effect.void;
+          }),
+        ),
+      ),
+    );
+    context.stdoutFiber = stdoutFiber;
+
+    // Drain stderr to avoid blocking the process
+    runFork(
+      child.stderr.pipe(
+        Stream.runDrain,
+        Effect.ignore,
+      ),
+    );
+
+    // Fetch the session file path via get_state for resume cursor
+    const stateReqId = yield* Random.nextUUIDv4;
+    const stateDeferred = yield* Deferred.make<unknown, never>();
+    pendingRequests.set(stateReqId, stateDeferred);
+    yield* writeCommand({ type: "get_state", id: stateReqId });
+
+    const stateResponse = yield* Deferred.await(stateDeferred).pipe(
+      Effect.timeoutOption(5000),
+    );
+
+    const sessionFile: string | undefined = (() => {
+      if (stateResponse._tag === "None") return undefined;
+      const resp = stateResponse.value as Record<string, unknown>;
+      if (resp["success"] !== true) return undefined;
+      const data = resp["data"];
+      if (!data || typeof data !== "object") return undefined;
+      const sf = (data as Record<string, unknown>)["sessionFile"];
+      return typeof sf === "string" && sf.trim().length > 0 ? sf.trim() : undefined;
+    })();
+
+    if (sessionFile !== undefined) {
+      context.session = {
+        ...context.session,
+        resumeCursor: { sessionFile },
+      };
+    }
 
     const sessionStartedStamp = yield* makeEventStamp();
     yield* offerRuntimeEvent({
@@ -622,7 +728,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       providerRefs: {},
     });
 
-    return { ...session };
+    return { ...context.session };
   });
 
   const sendTurn: PiAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
@@ -656,18 +762,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
     const promptText = typeof input.input === "string" ? input.input : "";
 
-    const runtimeContext = yield* Effect.context<never>();
-    const runFork = Effect.runForkWith(runtimeContext);
-    runFork(
-      Effect.tryPromise({
-        try: () => context.piSession.prompt(promptText),
-        catch: (cause) =>
-          new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "turn/prompt",
-            detail: toMessage(cause, "Failed to send prompt to Pi Agent."),
-          }),
-      }).pipe(Effect.catch(() => completeTurn(context, "failed", "Prompt failed."))),
+    yield* context.writeCommand({ type: "prompt", message: promptText }).pipe(
+      Effect.catchDefect(() => completeTurn(context, "failed", "Failed to send prompt.")),
     );
 
     return {
@@ -679,15 +775,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const interruptTurn: PiAdapterShape["interruptTurn"] = Effect.fn("interruptTurn")(
     function* (threadId, _turnId) {
       const context = yield* requireSession(threadId);
-      yield* Effect.tryPromise({
-        try: () => context.piSession.abort(),
-        catch: (cause) =>
-          new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "turn/interrupt",
-            detail: toMessage(cause, "Failed to interrupt Pi Agent turn."),
-          }),
-      });
+      yield* Effect.ignore(context.writeCommand({ type: "abort" }));
     },
   );
 
