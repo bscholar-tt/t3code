@@ -1,8 +1,6 @@
+import { type AgentSessionEvent, type RpcCommand } from "@earendil-works/pi-coding-agent";
 import {
-  type AgentSessionEvent,
-  type RpcCommand,
-} from "@earendil-works/pi-coding-agent";
-import {
+  ApprovalRequestId,
   type CanonicalItemType,
   EventId,
   type PiSettings,
@@ -15,8 +13,10 @@ import {
   type ProviderSession,
   type ProviderUserInputAnswers,
   RuntimeItemId,
+  RuntimeRequestId,
   ThreadId,
   TurnId,
+  type UserInputQuestion,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -40,6 +40,25 @@ import {
 } from "../Errors.ts";
 import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 
+// RpcExtensionUIRequest / RpcExtensionUIResponse are defined in the pi package's
+// internal rpc-types module but not re-exported from the public index, so we
+// mirror the relevant subset here.
+type RpcExtensionUIRequest =
+  | { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
+  | { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
+  | { type: "extension_ui_request"; id: string; method: "input"; title: string; placeholder?: string; timeout?: number }
+  | { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string }
+  | { type: "extension_ui_request"; id: string; method: "notify"; message: string; notifyType?: "info" | "warning" | "error" }
+  | { type: "extension_ui_request"; id: string; method: "setStatus"; statusKey: string; statusText: string | undefined }
+  | { type: "extension_ui_request"; id: string; method: "setWidget"; widgetKey: string; widgetLines: string[] | undefined; widgetPlacement?: "aboveEditor" | "belowEditor" }
+  | { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
+  | { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string };
+
+type RpcExtensionUIResponse =
+  | { type: "extension_ui_response"; id: string; value: string }
+  | { type: "extension_ui_response"; id: string; confirmed: boolean }
+  | { type: "extension_ui_response"; id: string; cancelled: true };
+
 const PROVIDER = ProviderDriverKind.make("piAgent");
 
 interface PiToolItem {
@@ -55,12 +74,21 @@ interface PiTurnState {
   readonly items: Array<PiToolItem>;
 }
 
+interface PendingExtensionUI {
+  readonly piId: string;
+  readonly questionId: string;
+  readonly deferred: Deferred.Deferred<ProviderUserInputAnswers, never>;
+  readonly method: "select" | "confirm";
+}
+
 interface PiSessionContext {
   session: ProviderSession;
   readonly sessionScope: Scope.Closeable;
   writeCommand: (cmd: RpcCommand) => Effect.Effect<void>;
+  writeExtensionResponse: (resp: RpcExtensionUIResponse) => Effect.Effect<void>;
   stdoutFiber: Fiber.Fiber<void, never> | undefined;
   readonly pendingRequests: Map<string, Deferred.Deferred<unknown, never>>;
+  readonly pendingExtensionUIs: Map<ApprovalRequestId, PendingExtensionUI>;
   readonly startedAt: string;
   turnState: PiTurnState | undefined;
   readonly turns: Array<{ id: TurnId; items: Array<PiToolItem> }>;
@@ -436,6 +464,83 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     }
   });
 
+  const handleExtensionUIRequest = Effect.fn("handleExtensionUIRequest")(function* (
+    context: PiSessionContext,
+    event: RpcExtensionUIRequest,
+  ) {
+    // Non-interactive side-effects: acknowledge immediately so Pi doesn't hang
+    if (
+      event.method === "notify" ||
+      event.method === "setStatus" ||
+      event.method === "setWidget" ||
+      event.method === "setTitle" ||
+      event.method === "set_editor_text"
+    ) {
+      yield* context.writeExtensionResponse({ type: "extension_ui_response", id: event.id, value: "" });
+      return;
+    }
+
+    // Free-text inputs: no structured equivalent in our contracts, cancel
+    if (event.method === "input" || event.method === "editor") {
+      yield* context.writeExtensionResponse({ type: "extension_ui_response", id: event.id, cancelled: true });
+      return;
+    }
+
+    // select / confirm: surface as user-input.requested
+    const ourRequestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
+    const questionId = String(ourRequestId);
+    const deferred = yield* Deferred.make<ProviderUserInputAnswers, never>();
+
+    let question: UserInputQuestion;
+    if (event.method === "select") {
+      question = {
+        id: questionId,
+        header: event.title.slice(0, 12),
+        question: event.title,
+        options: event.options.map((label) => ({ label, description: label })),
+        multiSelect: false,
+      };
+    } else {
+      // confirm
+      const body = event.message.length > 0 ? `${event.title}\n${event.message}` : event.title;
+      question = {
+        id: questionId,
+        header: "Confirm",
+        question: body,
+        options: [
+          { label: "Yes", description: "Confirm" },
+          { label: "No", description: "Cancel" },
+        ],
+        multiSelect: false,
+      };
+    }
+
+    context.pendingExtensionUIs.set(ourRequestId, {
+      piId: event.id,
+      questionId,
+      deferred,
+      method: event.method,
+    });
+
+    const stamp = yield* makeEventStamp();
+    yield* offerRuntimeEvent({
+      type: "user-input.requested",
+      eventId: stamp.eventId,
+      provider: PROVIDER,
+      createdAt: stamp.createdAt,
+      threadId: context.session.threadId,
+      ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
+      requestId: RuntimeRequestId.make(ourRequestId),
+      payload: { questions: [question] },
+      providerRefs: {},
+      raw: {
+        source: "pi.sdk.event" as const,
+        method: "extension_ui_request",
+        payload: event,
+      },
+    });
+  });
+
   const handleStdoutLine = Effect.fn("handleStdoutLine")(function* (
     context: PiSessionContext,
     line: string,
@@ -457,6 +562,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       return;
     }
 
+    if (msg["type"] === "extension_ui_request") {
+      yield* handleExtensionUIRequest(context, msg as RpcExtensionUIRequest);
+      return;
+    }
+
     yield* handlePiEvent(context, msg as AgentSessionEvent);
   });
 
@@ -470,6 +580,15 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     if (context.turnState) {
       yield* completeTurn(context, "interrupted", "Session stopped.");
     }
+
+    // Cancel any pending extension UI requests so Pi doesn't hang
+    for (const [, pending] of context.pendingExtensionUIs) {
+      yield* Effect.ignore(
+        context.writeExtensionResponse({ type: "extension_ui_response", id: pending.piId, cancelled: true }),
+      );
+      yield* Effect.ignore(Deferred.interrupt(pending.deferred));
+    }
+    context.pendingExtensionUIs.clear();
 
     if (context.stdoutFiber) {
       yield* Fiber.interrupt(context.stdoutFiber);
@@ -593,10 +712,15 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
     const outgoingQueue = yield* Queue.unbounded<Uint8Array>();
 
-    const writeCommand = (cmd: RpcCommand): Effect.Effect<void> =>
-      Queue.offer(outgoingQueue, Buffer.from(JSON.stringify(cmd) + "\n")).pipe(Effect.asVoid);
+    const writeLine = (obj: RpcCommand | RpcExtensionUIResponse): Effect.Effect<void> =>
+      Queue.offer(outgoingQueue, Buffer.from(JSON.stringify(obj) + "\n")).pipe(Effect.asVoid);
+
+    const writeCommand = (cmd: RpcCommand): Effect.Effect<void> => writeLine(cmd);
+    const writeExtensionResponse = (resp: RpcExtensionUIResponse): Effect.Effect<void> =>
+      writeLine(resp);
 
     const pendingRequests = new Map<string, Deferred.Deferred<unknown, never>>();
+    const pendingExtensionUIs = new Map<ApprovalRequestId, PendingExtensionUI>();
 
     const session: ProviderSession = {
       threadId,
@@ -614,8 +738,10 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       session,
       sessionScope,
       writeCommand,
+      writeExtensionResponse,
       stdoutFiber: undefined,
       pendingRequests,
+      pendingExtensionUIs,
       startedAt,
       turnState: undefined,
       turns: [],
@@ -808,11 +934,41 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const respondToRequest: PiAdapterShape["respondToRequest"] = (_threadId, _requestId, _decision) =>
     Effect.void;
 
-  const respondToUserInput: PiAdapterShape["respondToUserInput"] = (
-    _threadId,
-    _requestId,
-    _answers,
-  ) => Effect.void;
+  const respondToUserInput: PiAdapterShape["respondToUserInput"] = Effect.fn("respondToUserInput")(
+    function* (threadId, requestId, answers) {
+      const context = yield* requireSession(threadId);
+      const pending = context.pendingExtensionUIs.get(requestId);
+      if (!pending) return;
+      context.pendingExtensionUIs.delete(requestId);
+
+      // Build the response Pi expects based on the original method
+      let piResponse: RpcExtensionUIResponse;
+      if (pending.method === "confirm") {
+        const answer = answers[pending.questionId];
+        piResponse = { type: "extension_ui_response", id: pending.piId, confirmed: answer === "Yes" };
+      } else {
+        const answer = typeof answers[pending.questionId] === "string"
+          ? (answers[pending.questionId] as string)
+          : "";
+        piResponse = { type: "extension_ui_response", id: pending.piId, value: answer };
+      }
+
+      yield* context.writeExtensionResponse(piResponse);
+      yield* Deferred.succeed(pending.deferred, answers);
+
+      const stamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        type: "user-input.resolved",
+        eventId: stamp.eventId,
+        provider: PROVIDER,
+        createdAt: stamp.createdAt,
+        threadId: context.session.threadId,
+        requestId: RuntimeRequestId.make(requestId),
+        payload: { answers },
+        providerRefs: {},
+      });
+    },
+  );
 
   const stopSession: PiAdapterShape["stopSession"] = Effect.fn("stopSession")(function* (threadId) {
     const context = yield* requireSession(threadId);
