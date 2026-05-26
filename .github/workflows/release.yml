@@ -62,17 +62,20 @@ jobs:
           # GitHub release. The regex above intentionally accepts these so
           # contributors can dispatch beta/rc builds — the channel decision
           # lives here, not in the validator.
+          #
+          # `release_channel` stays "stable" because that's what
+          # `resolve-previous-release-tag.ts` accepts (stable|nightly) and
+          # pre-releases still want to diff against the last stable tag for
+          # release notes. Only `is_prerelease` / `make_latest` change.
           if [[ "$version" == *-* ]]; then
-            channel="prerelease"
             is_prerelease="true"
             make_latest="false"
           else
-            channel="stable"
             is_prerelease="false"
             make_latest="true"
           fi
 
-          echo "release_channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "release_channel=stable" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "name=T3 Code v$version" >> "$GITHUB_OUTPUT"
@@ -92,7 +95,7 @@ jobs:
         name: Resolve previous release tag
         run: |
           node scripts/resolve-previous-release-tag.ts \
-            --channel "${{ steps.release_meta.outputs.release_channel }}" \
+            --channel "stable" \
             --current-tag "${{ steps.release_meta.outputs.tag }}" \
             --github-output
 
