@@ -106,7 +106,11 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       });
       const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
 
-      const checkProvider = checkPiProviderStatus(effectiveConfig, serverConfig.cwd, processEnv).pipe(
+      const checkProvider = checkPiProviderStatus(
+        effectiveConfig,
+        serverConfig.cwd,
+        processEnv,
+      ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fs),

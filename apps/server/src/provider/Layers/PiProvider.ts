@@ -150,11 +150,7 @@ function skillNameFromPath(filePath: string, pathSep: string): string {
 const scanSkillDir = Effect.fn("scanSkillDir")(function* (
   dir: string,
   scope: string,
-): Effect.fn.Return<
-  ServerProviderSkill[],
-  never,
-  FileSystem.FileSystem | Path.Path
-> {
+): Effect.fn.Return<ServerProviderSkill[], never, FileSystem.FileSystem | Path.Path> {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const skills: ServerProviderSkill[] = [];
@@ -173,9 +169,7 @@ const scanSkillDir = Effect.fn("scanSkillDir")(function* (
       const skillMdPath = path.join(entryPath, "SKILL.md");
       const hasSkillMd = yield* fs.exists(skillMdPath).pipe(Effect.orElseSucceed(() => false));
       if (hasSkillMd) {
-        const content = yield* fs.readFileString(skillMdPath).pipe(
-          Effect.orElseSucceed(() => ""),
-        );
+        const content = yield* fs.readFileString(skillMdPath).pipe(Effect.orElseSucceed(() => ""));
         const frontmatter = parseSkillFrontmatter(content);
         const name = frontmatter.name ?? entry;
         skills.push({
@@ -191,9 +185,7 @@ const scanSkillDir = Effect.fn("scanSkillDir")(function* (
     }
 
     if (entry.endsWith(".md")) {
-      const content = yield* fs.readFileString(entryPath).pipe(
-        Effect.orElseSucceed(() => ""),
-      );
+      const content = yield* fs.readFileString(entryPath).pipe(Effect.orElseSucceed(() => ""));
       const frontmatter = parseSkillFrontmatter(content);
       const name = frontmatter.name ?? skillNameFromPath(entry, path.sep);
       skills.push({
@@ -213,11 +205,7 @@ const scanSkillDir = Effect.fn("scanSkillDir")(function* (
 const discoverPiSkills = Effect.fn("discoverPiSkills")(function* (
   cwd: string,
   piSettings: PiSettings,
-): Effect.fn.Return<
-  ReadonlyArray<ServerProviderSkill>,
-  never,
-  FileSystem.FileSystem | Path.Path
-> {
+): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
   const path = yield* Path.Path;
   const piHomePath = yield* resolvePiHomePath(piSettings);
 

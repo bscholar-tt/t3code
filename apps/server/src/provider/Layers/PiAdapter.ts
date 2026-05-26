@@ -44,13 +44,53 @@ import type { PiAdapterShape } from "../Services/PiAdapter.ts";
 // internal rpc-types module but not re-exported from the public index, so we
 // mirror the relevant subset here.
 type RpcExtensionUIRequest =
-  | { type: "extension_ui_request"; id: string; method: "select"; title: string; options: string[]; timeout?: number }
-  | { type: "extension_ui_request"; id: string; method: "confirm"; title: string; message: string; timeout?: number }
-  | { type: "extension_ui_request"; id: string; method: "input"; title: string; placeholder?: string; timeout?: number }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "select";
+      title: string;
+      options: string[];
+      timeout?: number;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "confirm";
+      title: string;
+      message: string;
+      timeout?: number;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "input";
+      title: string;
+      placeholder?: string;
+      timeout?: number;
+    }
   | { type: "extension_ui_request"; id: string; method: "editor"; title: string; prefill?: string }
-  | { type: "extension_ui_request"; id: string; method: "notify"; message: string; notifyType?: "info" | "warning" | "error" }
-  | { type: "extension_ui_request"; id: string; method: "setStatus"; statusKey: string; statusText: string | undefined }
-  | { type: "extension_ui_request"; id: string; method: "setWidget"; widgetKey: string; widgetLines: string[] | undefined; widgetPlacement?: "aboveEditor" | "belowEditor" }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "notify";
+      message: string;
+      notifyType?: "info" | "warning" | "error";
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "setStatus";
+      statusKey: string;
+      statusText: string | undefined;
+    }
+  | {
+      type: "extension_ui_request";
+      id: string;
+      method: "setWidget";
+      widgetKey: string;
+      widgetLines: string[] | undefined;
+      widgetPlacement?: "aboveEditor" | "belowEditor";
+    }
   | { type: "extension_ui_request"; id: string; method: "setTitle"; title: string }
   | { type: "extension_ui_request"; id: string; method: "set_editor_text"; text: string };
 
@@ -624,7 +664,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     // Cancel any pending extension UI requests so Pi doesn't hang
     for (const [, pending] of context.pendingExtensionUIs) {
       yield* Effect.ignore(
-        context.writeExtensionResponse({ type: "extension_ui_response", id: pending.piId, cancelled: true }),
+        context.writeExtensionResponse({
+          type: "extension_ui_response",
+          id: pending.piId,
+          cancelled: true,
+        }),
       );
       yield* Effect.ignore(Deferred.interrupt(pending.deferred));
     }
@@ -793,12 +837,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     const runFork = Effect.runForkWith(runtimeContext);
 
     // Fork stdin writer — continuously drains the outgoing queue to the process stdin
-    runFork(
-      Stream.fromQueue(outgoingQueue).pipe(
-        Stream.run(child.stdin),
-        Effect.ignore,
-      ),
-    );
+    runFork(Stream.fromQueue(outgoingQueue).pipe(Stream.run(child.stdin), Effect.ignore));
 
     // Fork stdout reader — parses JSONL events and routes them
     const stdoutFiber = runFork(
@@ -822,12 +861,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     context.stdoutFiber = stdoutFiber;
 
     // Drain stderr to avoid blocking the process
-    runFork(
-      child.stderr.pipe(
-        Stream.runDrain,
-        Effect.ignore,
-      ),
-    );
+    runFork(child.stderr.pipe(Stream.runDrain, Effect.ignore));
 
     // Fetch the session file path via get_state for resume cursor
     const stateReqId = yield* Random.nextUUIDv4;
@@ -835,9 +869,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     pendingRequests.set(stateReqId, stateDeferred);
     yield* writeCommand({ type: "get_state", id: stateReqId });
 
-    const stateResponse = yield* Deferred.await(stateDeferred).pipe(
-      Effect.timeoutOption(5000),
-    );
+    const stateResponse = yield* Deferred.await(stateDeferred).pipe(Effect.timeoutOption(5000));
 
     const sessionFile: string | undefined = (() => {
       if (stateResponse._tag === "None") return undefined;
@@ -928,9 +960,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
     const promptText = typeof input.input === "string" ? input.input : "";
 
-    yield* context.writeCommand({ type: "prompt", message: promptText }).pipe(
-      Effect.catchDefect(() => completeTurn(context, "failed", "Failed to send prompt.")),
-    );
+    yield* context
+      .writeCommand({ type: "prompt", message: promptText })
+      .pipe(Effect.catchDefect(() => completeTurn(context, "failed", "Failed to send prompt.")));
 
     return {
       threadId: context.session.threadId,
@@ -985,7 +1017,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       let piResponse: RpcExtensionUIResponse;
       if (pending.method === "confirm") {
         const answer = answers[pending.questionId];
-        piResponse = { type: "extension_ui_response", id: pending.piId, confirmed: answer === "Yes" };
+        piResponse = {
+          type: "extension_ui_response",
+          id: pending.piId,
+          confirmed: answer === "Yes",
+        };
       } else if (pending.method === "input" && pending.numberedOptions) {
         // Multi-select numbered list: map selected labels back to 1-based indices
         const raw = answers[pending.questionId];
