@@ -206,7 +206,13 @@ jobs:
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
       - name: Build t3 server package
-        run: bun --filter=t3 run build
+        # `turbo run build --filter=t3` (not `bun --filter=t3`) is what we want
+        # here: turbo respects the workspace dependency graph and builds the
+        # web client into apps/web/dist first, which `cli.ts build` then
+        # copies into apps/server/dist/client. `bun --filter=t3 run build`
+        # only runs t3's own script and skips the web build, leaving the
+        # subsequent `cli.ts pack` step without dist/client/index.html.
+        run: bunx turbo run build --filter=t3
 
       - name: Pack t3 CLI tarball
         run: |
