@@ -551,7 +551,9 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         id: questionId,
         header: event.title.slice(0, 12),
         question: event.title,
-        options: event.options.map((label: string) => ({ label, description: label })),
+        options: event.options
+          .filter((label: string) => label !== "✏️ Type custom response...")
+          .map((label: string) => ({ label, description: label })),
         multiSelect: false,
       };
     } else if (event.method === "confirm") {
