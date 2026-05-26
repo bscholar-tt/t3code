@@ -78,7 +78,7 @@ interface PendingExtensionUI {
   readonly piId: string;
   readonly questionId: string;
   readonly deferred: Deferred.Deferred<ProviderUserInputAnswers, never>;
-  readonly method: "select" | "confirm" | "input";
+  readonly method: "select" | "confirm" | "input" | "editor";
   // Populated for `input` requests that were parsed as numbered lists.
   // Used to map selected labels back to 1-based indices for Pi's multi-select protocol.
   readonly numberedOptions?: ReadonlyArray<string>;
@@ -484,7 +484,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     context: PiSessionContext,
     event: RpcExtensionUIRequest,
   ) {
-    // Non-interactive side-effects: acknowledge immediately so Pi doesn't hang
+    // Fire-and-forget side-effects: Pi does not wait for a response.
     if (
       event.method === "notify" ||
       event.method === "setStatus" ||
@@ -492,15 +492,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       event.method === "setTitle" ||
       event.method === "set_editor_text"
     ) {
-      yield* context.writeExtensionResponse({ type: "extension_ui_response", id: event.id, value: "" });
       return;
     }
 
-    // editor: no useful mapping, cancel immediately
-    if (event.method === "editor") {
-      yield* context.writeExtensionResponse({ type: "extension_ui_response", id: event.id, cancelled: true });
-      return;
-    }
+    // editor: surface as freeform text input (same protocol shape as input).
+    // Falls through to the input branch below.
 
     // select / confirm / input: surface as user-input.requested
     const ourRequestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);
@@ -531,10 +527,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         multiSelect: false,
       };
     } else {
-      // input — Pi uses this for multi-select (numbered list in title) and freeform.
-      // If the title contains a numbered list, parse it into real options with multiSelect.
-      // Otherwise surface with empty options; T3's auto-added "Other" field handles free text.
-      const parsed = parseNumberedList(event.title);
+      // input / editor — both expect { value: "..." } back.
+      // input: Pi uses this for multi-select (numbered list in title) and freeform.
+      //   If the title contains a numbered list, parse it into real options with multiSelect.
+      //   Otherwise surface with empty options; T3's auto-added "Other" field handles free text.
+      // editor: multi-line freeform, no options — same freeform path.
+      const title = "title" in event ? event.title : "";
+      const parsed = event.method === "input" ? parseNumberedList(title) : null;
       if (parsed) {
         numberedOptions = parsed.items;
         question = {
@@ -547,8 +546,8 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       } else {
         question = {
           id: questionId,
-          header: event.title.slice(0, 12),
-          question: event.title,
+          header: title.slice(0, 12),
+          question: title,
           options: [],
           multiSelect: false,
         };
