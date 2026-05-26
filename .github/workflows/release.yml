@@ -57,12 +57,27 @@ jobs:
             exit 1
           fi
 
-          echo "release_channel=stable" >> "$GITHUB_OUTPUT"
+          # Anything with a `-` suffix (e.g. `1.2.3-beta.1`) is a pre-release
+          # in SemVer terms, so we must not promote it as the latest stable
+          # GitHub release. The regex above intentionally accepts these so
+          # contributors can dispatch beta/rc builds — the channel decision
+          # lives here, not in the validator.
+          if [[ "$version" == *-* ]]; then
+            channel="prerelease"
+            is_prerelease="true"
+            make_latest="false"
+          else
+            channel="stable"
+            is_prerelease="false"
+            make_latest="true"
+          fi
+
+          echo "release_channel=$channel" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "name=T3 Code v$version" >> "$GITHUB_OUTPUT"
-          echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-          echo "make_latest=true" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
+          echo "make_latest=$make_latest" >> "$GITHUB_OUTPUT"
 
       - name: Lint
         run: bun run lint
@@ -77,7 +92,7 @@ jobs:
         name: Resolve previous release tag
         run: |
           node scripts/resolve-previous-release-tag.ts \
-            --channel "stable" \
+            --channel "${{ steps.release_meta.outputs.release_channel }}" \
             --current-tag "${{ steps.release_meta.outputs.tag }}" \
             --github-output
 
@@ -188,7 +203,7 @@ jobs:
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
       - name: Build t3 server package
-        run: bun run build --filter=t3
+        run: bun --filter=t3 run build
 
       - name: Pack t3 CLI tarball
         run: |
@@ -220,6 +235,7 @@ jobs:
             release-assets/*.dmg
             release-assets/*.zip
             release-assets/*.AppImage
+            release-assets/*.blockmap
             release-assets/*.yml
             release-assets/*.tgz
           fail_on_unmatched_files: true
@@ -239,6 +255,7 @@ jobs:
             release-assets/*.dmg
             release-assets/*.zip
             release-assets/*.AppImage
+            release-assets/*.blockmap
             release-assets/*.yml
             release-assets/*.tgz
           fail_on_unmatched_files: true

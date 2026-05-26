@@ -18,21 +18,25 @@ import {
   TurnId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
+import { parseCliArgs } from "@t3tools/shared/cliArgs";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Queue from "effect/Queue";
 import * as Random from "effect/Random";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { makePiEnvironment } from "../Drivers/PiHome.ts";
 import {
   ProviderAdapterProcessError,
+  ProviderAdapterRequestError,
   ProviderAdapterSessionClosedError,
   ProviderAdapterSessionNotFoundError,
   ProviderAdapterValidationError,
@@ -272,6 +276,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const serverConfig = yield* ServerConfig;
   const piEnvironment = yield* makePiEnvironment(piSettings, options?.environment);
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const fileSystem = yield* FileSystem.FileSystem;
 
   const sessions = new Map<ThreadId, PiSessionContext>();
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
@@ -771,6 +776,18 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     if (modelSelection?.model) {
       spawnArgs.push("--model", modelSelection.model);
     }
+    // User-configured extra args (e.g. `--thinking high`) are appended last so
+    // they can override defaults set above when Pi's CLI does last-wins parsing.
+    // Mirrors the ClaudeAdapter → `parseCliArgs(...).flags` pattern so behavior
+    // stays consistent across drivers. `parseCliArgs` strips the leading `--`
+    // and uses `null` to mean "boolean flag, no value".
+    const extraSpawnArgs = parseCliArgs(piSettings.launchArgs).flags;
+    for (const [flag, value] of Object.entries(extraSpawnArgs)) {
+      spawnArgs.push(`--${flag}`);
+      if (value !== null) {
+        spawnArgs.push(value);
+      }
+    }
 
     const sessionScope = yield* Scope.make();
 
@@ -871,7 +888,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     pendingRequests.set(stateReqId, stateDeferred);
     yield* writeCommand({ type: "get_state", id: stateReqId });
 
-    const stateResponse = yield* Deferred.await(stateDeferred).pipe(Effect.timeoutOption(5000));
+    const stateResponse = yield* Deferred.await(stateDeferred).pipe(
+      Effect.timeoutOption(5000),
+      // Without this, a 5s timeout leaves the deferred parked in
+      // `pendingRequests` until the session is torn down — one orphan per
+      // missed startup probe. The reader fiber only deletes entries when a
+      // matching response arrives, so we must clean up on the timeout path.
+      Effect.ensuring(Effect.sync(() => pendingRequests.delete(stateReqId))),
+    );
 
     const sessionFile: string | undefined = (() => {
       if (stateResponse._tag === "None") return undefined;
@@ -934,8 +958,52 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
   const sendTurn: PiAdapterShape["sendTurn"] = Effect.fn("sendTurn")(function* (input) {
     const context = yield* requireSession(input.threadId);
 
+    // Resolve attachments up-front so failures surface before we mutate any
+    // session state (turnState, status, etc.). Pi's `prompt` RPC takes inline
+    // `ImageContent` (mimeType + base64), so we read each file once here
+    // rather than trying to stream them through Pi.
+    const piImages = yield* Effect.forEach(
+      input.attachments ?? [],
+      (attachment) =>
+        Effect.gen(function* () {
+          const attachmentPath = resolveAttachmentPath({
+            attachmentsDir: serverConfig.attachmentsDir,
+            attachment,
+          });
+          if (!attachmentPath) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "prompt",
+              detail: `Invalid attachment id '${attachment.id}'.`,
+            });
+          }
+          const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "prompt",
+                  detail: `Failed to read attachment file: ${cause.message}.`,
+                  cause,
+                }),
+            ),
+          );
+          return {
+            type: "image" as const,
+            mimeType: attachment.mimeType,
+            data: Buffer.from(bytes).toString("base64"),
+          };
+        }),
+      { concurrency: 1 },
+    );
+
     if (context.turnState) {
-      yield* completeTurn(context, "completed");
+      // The previous turn may still be executing on the Pi side. Ask Pi to
+      // abort it before opening a new turn, and surface the old turn as
+      // `interrupted` rather than `completed` so the UI doesn't claim a
+      // settled result that never arrived.
+      yield* Effect.ignore(context.writeCommand({ type: "abort" }));
+      yield* completeTurn(context, "interrupted", "Superseded by a new turn.");
     }
 
     const turnId = TurnId.make(yield* Random.nextUUIDv4);
@@ -963,7 +1031,11 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     const promptText = typeof input.input === "string" ? input.input : "";
 
     yield* context
-      .writeCommand({ type: "prompt", message: promptText })
+      .writeCommand({
+        type: "prompt",
+        message: promptText,
+        ...(piImages.length > 0 ? { images: piImages } : {}),
+      })
       .pipe(Effect.catchDefect(() => completeTurn(context, "failed", "Failed to send prompt.")));
 
     return {
