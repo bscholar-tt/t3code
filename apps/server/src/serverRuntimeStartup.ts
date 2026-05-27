@@ -6,7 +6,6 @@ import {
   type ModelSelection,
   ProjectId,
   ProviderDriverKind,
-  ProviderInstanceId,
   ThreadId,
   defaultInstanceIdForDriver,
 } from "@t3tools/contracts";

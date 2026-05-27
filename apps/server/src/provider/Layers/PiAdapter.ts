@@ -3,20 +3,16 @@ import {
   SessionManager,
   type AgentSession,
   type AgentSessionEvent,
-  type CreateAgentSessionOptions,
 } from "@earendil-works/pi-coding-agent";
 import {
   type CanonicalItemType,
   EventId,
   type PiSettings,
-  type ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderRuntimeTurnStatus,
-  type ProviderSendTurnInput,
   type ProviderSession,
-  type ProviderUserInputAnswers,
   RuntimeItemId,
   ThreadId,
   TurnId,
@@ -175,7 +171,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 ) {
   const boundInstanceId = options?.instanceId ?? ProviderInstanceId.make("piAgent");
   const serverConfig = yield* ServerConfig;
-  const piEnvironment = yield* makePiEnvironment(piSettings, options?.environment);
+  const _piEnvironment = yield* makePiEnvironment(piSettings, options?.environment);
 
   const sessions = new Map<ThreadId, PiSessionContext>();
   const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();

@@ -76,7 +76,7 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const httpClient = yield* HttpClient.HttpClient;
-      const eventLoggers = yield* ProviderEventLoggers;
+      const _eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const continuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
@@ -106,7 +106,11 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       });
       const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
 
-      const checkProvider = checkPiProviderStatus(effectiveConfig, serverConfig.cwd, processEnv).pipe(
+      const checkProvider = checkPiProviderStatus(
+        effectiveConfig,
+        serverConfig.cwd,
+        processEnv,
+      ).pipe(
         Effect.map(stampIdentity),
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fs),

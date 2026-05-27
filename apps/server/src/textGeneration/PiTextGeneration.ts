@@ -25,8 +25,6 @@ import { makePiEnvironment } from "../provider/Drivers/PiHome.ts";
 
 const PI_TIMEOUT_MS = 180_000;
 
-const encodeJsonString = Schema.encodeEffect(Schema.UnknownFromJsonString);
-
 export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* (
   piSettings: PiSettings,
   environment: NodeJS.ProcessEnv = process.env,
