@@ -467,6 +467,22 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         const detail = summarizePiToolArgs(args);
         const argsObj =
           args && typeof args === "object" ? (args as Record<string, unknown>) : undefined;
+        if (event.toolName === "set_plan" && !event.isError) {
+          const planMarkdown = typeof argsObj?.plan === "string" ? argsObj.plan.trim() : undefined;
+          if (planMarkdown) {
+            const planStamp = yield* makeEventStamp();
+            yield* offerRuntimeEvent({
+              type: "turn.proposed.completed",
+              eventId: planStamp.eventId,
+              provider: PROVIDER,
+              createdAt: planStamp.createdAt,
+              threadId: context.session.threadId,
+              turnId: context.turnState.turnId,
+              payload: { planMarkdown },
+              providerRefs: {},
+            });
+          }
+        }
         yield* offerRuntimeEvent({
           ...base,
           turnId: context.turnState.turnId,
