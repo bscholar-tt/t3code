@@ -1,10 +1,8 @@
 import { DesktopNotificationPayloadSchema } from "@t3tools/contracts";
 import * as Electron from "electron";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import * as DesktopAssets from "../../app/DesktopAssets.ts";
 import * as IpcChannels from "../channels.ts";
 import { makeIpcMethod } from "../DesktopIpc.ts";
 
@@ -19,14 +17,11 @@ export const showNotification = makeIpcMethod({
       return;
     }
 
-    const assets = yield* DesktopAssets.DesktopAssets;
-    const iconPaths = yield* assets.iconPaths;
-    const iconPath = Option.getOrUndefined(iconPaths.png);
-
+    // macOS uses the app bundle's .icns as the notification icon automatically;
+    // setting `icon` here would add a secondary content image on the right instead.
     const notification = new Electron.Notification({
       title: payload.title,
       body: payload.body,
-      ...(iconPath !== undefined ? { icon: iconPath } : {}),
     });
 
     const navigatePayload = {
