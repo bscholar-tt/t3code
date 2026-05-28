@@ -28,6 +28,9 @@ const clientSettings: ClientSettings = {
   sidebarThreadSortOrder: "created_at",
   sidebarThreadPreviewCount: 6,
   timestampFormat: "24-hour",
+  desktopNotifyOnTurnCompleted: false,
+  desktopNotifyOnInputNeeded: false,
+  desktopNotifyOnError: false,
 };
 
 const decodeClientSettingsJson = Schema.decodeEffect(Schema.fromJsonString(ClientSettingsSchema));

@@ -242,6 +242,8 @@ function makeDesktopBridge(overrides: Partial<DesktopBridge> = {}): DesktopBridg
       throw new Error("installUpdate not implemented in test");
     },
     onUpdateState: () => () => undefined,
+    showDesktopNotification: async () => undefined,
+    onNotificationNavigate: () => () => undefined,
     ...overrides,
   };
 }
@@ -615,6 +617,9 @@ describe("wsApi", () => {
       sidebarThreadSortOrder: "created_at" as const,
       sidebarThreadPreviewCount: 6,
       timestampFormat: "24-hour" as const,
+      desktopNotifyOnTurnCompleted: false,
+      desktopNotifyOnInputNeeded: false,
+      desktopNotifyOnError: false,
     };
     const getClientSettings = vi.fn().mockResolvedValue({
       ...clientSettings,
@@ -678,6 +683,9 @@ describe("wsApi", () => {
       sidebarThreadSortOrder: "created_at" as const,
       sidebarThreadPreviewCount: 6,
       timestampFormat: "24-hour" as const,
+      desktopNotifyOnTurnCompleted: false,
+      desktopNotifyOnInputNeeded: false,
+      desktopNotifyOnError: false,
     };
 
     await api.persistence.setClientSettings(clientSettings);

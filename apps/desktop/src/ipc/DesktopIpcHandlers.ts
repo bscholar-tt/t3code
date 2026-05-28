@@ -32,6 +32,7 @@ import {
   installUpdate,
   setUpdateChannel,
 } from "./methods/updates.ts";
+import { showNotification } from "./methods/notification.ts";
 import {
   confirm,
   getAppBranding,
@@ -75,6 +76,7 @@ export const installDesktopIpcHandlers = Effect.gen(function* () {
   yield* ipc.handle(setTheme);
   yield* ipc.handle(showContextMenu);
   yield* ipc.handle(openExternal);
+  yield* ipc.handle(showNotification);
 
   yield* ipc.handle(getUpdateState);
   yield* ipc.handle(setUpdateChannel);

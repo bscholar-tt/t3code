@@ -891,6 +891,90 @@ export function GeneralSettingsPanel() {
         />
       </SettingsSection>
 
+      {isElectron ? (
+        <SettingsSection title="Desktop Notifications">
+          <SettingsRow
+            title="Turn completed"
+            description="Notify when an agent finishes a turn."
+            resetAction={
+              settings.desktopNotifyOnTurnCompleted !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnTurnCompleted ? (
+                <SettingResetButton
+                  label="turn completed notification"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnTurnCompleted:
+                        DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnTurnCompleted,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnTurnCompleted}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnTurnCompleted: Boolean(checked) })
+                }
+                aria-label="Notify on turn completed"
+              />
+            }
+          />
+          <SettingsRow
+            title="Input needed"
+            description="Notify when the agent is waiting for your approval or response."
+            resetAction={
+              settings.desktopNotifyOnInputNeeded !==
+              DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnInputNeeded ? (
+                <SettingResetButton
+                  label="input needed notification"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnInputNeeded:
+                        DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnInputNeeded,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnInputNeeded}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnInputNeeded: Boolean(checked) })
+                }
+                aria-label="Notify on input needed"
+              />
+            }
+          />
+          <SettingsRow
+            title="Error"
+            description="Notify when an agent session encounters an error."
+            resetAction={
+              settings.desktopNotifyOnError !== DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnError ? (
+                <SettingResetButton
+                  label="error notification"
+                  onClick={() =>
+                    updateSettings({
+                      desktopNotifyOnError: DEFAULT_UNIFIED_SETTINGS.desktopNotifyOnError,
+                    })
+                  }
+                />
+              ) : null
+            }
+            control={
+              <Switch
+                checked={settings.desktopNotifyOnError}
+                onCheckedChange={(checked) =>
+                  updateSettings({ desktopNotifyOnError: Boolean(checked) })
+                }
+                aria-label="Notify on error"
+              />
+            }
+          />
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection title="About">
         {isElectron || HOSTED_APP_CHANNEL ? (
           <AboutVersionSection />
