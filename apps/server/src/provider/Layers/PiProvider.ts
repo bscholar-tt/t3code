@@ -563,11 +563,12 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
 
   for (const cmd of rpcCommands) {
     if (cmd.source === "skill") {
-      if (!skillNames.has(cmd.name)) {
-        skillNames.add(cmd.name);
+      const skillName = cmd.name.replace(/^skill:/, "");
+      if (!skillNames.has(skillName)) {
+        skillNames.add(skillName);
         allSkills.push({
-          name: cmd.name,
-          path: cmd.sourceInfo?.path ?? cmd.name,
+          name: skillName,
+          path: cmd.sourceInfo?.path ?? skillName,
           enabled: true,
           ...(cmd.sourceInfo?.scope ? { scope: cmd.sourceInfo.scope } : {}),
           ...(cmd.description ? { description: cmd.description } : {}),
