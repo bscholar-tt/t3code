@@ -565,7 +565,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     if (!seen.has(cmd.name)) {
       seen.add(cmd.name);
       slashCommands.push({
-        name: cmd.source === "skill" ? `skill:${cmd.name}` : cmd.name,
+        name: cmd.name,
         ...(cmd.description ? { description: cmd.description } : {}),
       });
     }
