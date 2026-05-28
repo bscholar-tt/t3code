@@ -4,12 +4,10 @@ import {
   type CanonicalItemType,
   EventId,
   type PiSettings,
-  type ProviderApprovalDecision,
   ProviderDriverKind,
   ProviderInstanceId,
   type ProviderRuntimeEvent,
   type ProviderRuntimeTurnStatus,
-  type ProviderSendTurnInput,
   type ProviderSession,
   type ProviderUserInputAnswers,
   RuntimeItemId,
@@ -116,6 +114,8 @@ interface PiTurnState {
   readonly turnId: TurnId;
   readonly startedAt: string;
   readonly items: Array<PiToolItem>;
+  activeTextItemId: RuntimeItemId | undefined;
+  activeReasoningItemId: RuntimeItemId | undefined;
 }
 
 interface PendingExtensionUI {
@@ -296,6 +296,39 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     const turnState = context.turnState;
     if (!turnState) return;
 
+    if (turnState.activeTextItemId) {
+      const closingTextId = turnState.activeTextItemId;
+      turnState.activeTextItemId = undefined;
+      const closingStamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        eventId: closingStamp.eventId,
+        provider: PROVIDER,
+        createdAt: closingStamp.createdAt,
+        threadId: context.session.threadId,
+        turnId: turnState.turnId,
+        itemId: closingTextId,
+        type: "item.completed",
+        payload: { itemType: "assistant_message", status: "completed" },
+        providerRefs: {},
+      });
+    }
+    if (turnState.activeReasoningItemId) {
+      const closingReasoningId = turnState.activeReasoningItemId;
+      turnState.activeReasoningItemId = undefined;
+      const closingStamp = yield* makeEventStamp();
+      yield* offerRuntimeEvent({
+        eventId: closingStamp.eventId,
+        provider: PROVIDER,
+        createdAt: closingStamp.createdAt,
+        threadId: context.session.threadId,
+        turnId: turnState.turnId,
+        itemId: closingReasoningId,
+        type: "item.completed",
+        payload: { itemType: "reasoning", status: "completed" },
+        providerRefs: {},
+      });
+    }
+
     context.turnState = undefined;
     context.turns.push({
       id: turnState.turnId,
@@ -358,7 +391,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         if (!context.turnState) {
           const turnId = TurnId.make(yield* Random.nextUUIDv4);
           const startedAt = yield* nowIso;
-          context.turnState = { turnId, startedAt, items: [] };
+          context.turnState = {
+            turnId,
+            startedAt,
+            items: [],
+            activeTextItemId: undefined,
+            activeReasoningItemId: undefined,
+          };
           const updatedAt = yield* nowIso;
           context.session = {
             ...context.session,
@@ -381,9 +420,21 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         const assistantEvent = event.assistantMessageEvent;
         if (!assistantEvent) return;
         if (assistantEvent.type === "text_delta") {
+          if (!context.turnState.activeTextItemId) {
+            const textItemId = RuntimeItemId.make(yield* Random.nextUUIDv4);
+            context.turnState.activeTextItemId = textItemId;
+            yield* offerRuntimeEvent({
+              ...base,
+              turnId: context.turnState.turnId,
+              itemId: textItemId,
+              type: "item.started",
+              payload: { itemType: "assistant_message" },
+            });
+          }
           yield* offerRuntimeEvent({
             ...base,
             turnId: context.turnState.turnId,
+            itemId: context.turnState.activeTextItemId,
             type: "content.delta",
             payload: {
               streamKind: "assistant_text",
@@ -391,9 +442,21 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
             },
           });
         } else if (assistantEvent.type === "thinking_delta") {
+          if (!context.turnState.activeReasoningItemId) {
+            const reasoningItemId = RuntimeItemId.make(yield* Random.nextUUIDv4);
+            context.turnState.activeReasoningItemId = reasoningItemId;
+            yield* offerRuntimeEvent({
+              ...base,
+              turnId: context.turnState.turnId,
+              itemId: reasoningItemId,
+              type: "item.started",
+              payload: { itemType: "reasoning" },
+            });
+          }
           yield* offerRuntimeEvent({
             ...base,
             turnId: context.turnState.turnId,
+            itemId: context.turnState.activeReasoningItemId,
             type: "content.delta",
             payload: {
               streamKind: "reasoning_text",
@@ -406,6 +469,28 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
       case "tool_execution_start": {
         if (!context.turnState) return;
+        if (context.turnState.activeTextItemId) {
+          const closingTextId = context.turnState.activeTextItemId;
+          context.turnState.activeTextItemId = undefined;
+          yield* offerRuntimeEvent({
+            ...base,
+            turnId: context.turnState.turnId,
+            itemId: closingTextId,
+            type: "item.completed",
+            payload: { itemType: "assistant_message", status: "completed" },
+          });
+        }
+        if (context.turnState.activeReasoningItemId) {
+          const closingReasoningId = context.turnState.activeReasoningItemId;
+          context.turnState.activeReasoningItemId = undefined;
+          yield* offerRuntimeEvent({
+            ...base,
+            turnId: context.turnState.turnId,
+            itemId: closingReasoningId,
+            type: "item.completed",
+            payload: { itemType: "reasoning", status: "completed" },
+          });
+        }
         const itemId = RuntimeItemId.make(event.toolCallId);
         const itemType = classifyToolItemType(event.toolName);
         const detail = summarizePiToolArgs(event.args);
@@ -1024,7 +1109,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
     const turnId = TurnId.make(yield* Random.nextUUIDv4);
     const turnStartedAt = yield* nowIso;
-    context.turnState = { turnId, startedAt: turnStartedAt, items: [] };
+    context.turnState = {
+      turnId,
+      startedAt: turnStartedAt,
+      items: [],
+      activeTextItemId: undefined,
+      activeReasoningItemId: undefined,
+    };
     context.session = {
       ...context.session,
       status: "running",
@@ -1044,15 +1135,24 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       providerRefs: {},
     });
 
-    const promptText = typeof input.input === "string" ? input.input : "";
+    const rawPromptText = typeof input.input === "string" ? input.input : "";
+    const trimmed = rawPromptText.trim();
 
-    yield* context
-      .writeCommand({
-        type: "prompt",
-        message: promptText,
-        ...(piImages.length > 0 ? { images: piImages } : {}),
-      })
-      .pipe(Effect.catchDefect(() => completeTurn(context, "failed", "Failed to send prompt.")));
+    if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
+      const customInstructions = trimmed.slice("/compact".length).trim() || undefined;
+      yield* context
+        .writeCommand({ type: "compact", ...(customInstructions ? { customInstructions } : {}) })
+        .pipe(Effect.catchDefect(() => completeTurn(context, "failed", "Compaction failed.")));
+    } else {
+      const promptText = rawPromptText.replace(/^\$([a-zA-Z][\w:.-]*)/, "/skill:$1");
+      yield* context
+        .writeCommand({
+          type: "prompt",
+          message: promptText,
+          ...(piImages.length > 0 ? { images: piImages } : {}),
+        })
+        .pipe(Effect.catchDefect(() => completeTurn(context, "failed", "Failed to send prompt.")));
+    }
 
     return {
       threadId: context.session.threadId,
