@@ -8,6 +8,8 @@ import * as Ref from "effect/Ref";
 import type * as Electron from "electron";
 import { vi } from "vitest";
 
+vi.mock("electron", () => ({}));
+
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";

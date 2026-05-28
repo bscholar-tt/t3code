@@ -9,6 +9,10 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
+import { vi } from "vitest";
+
+vi.mock("electron", () => ({}));
+vi.mock("electron-updater", () => ({ autoUpdater: {} }));
 
 import * as DesktopBackendManager from "../backend/DesktopBackendManager.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
