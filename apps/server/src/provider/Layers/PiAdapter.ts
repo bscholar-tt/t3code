@@ -1143,6 +1143,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       yield* context
         .writeCommand({ type: "compact", ...(customInstructions ? { customInstructions } : {}) })
         .pipe(Effect.catchDefect(() => completeTurn(context, "failed", "Compaction failed.")));
+      yield* completeTurn(context, "completed");
     } else {
       const promptText = rawPromptText.replace(/^\$([a-zA-Z][\w:.-]*)/, "/skill:$1");
       yield* context
