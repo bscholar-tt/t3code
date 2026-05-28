@@ -14,6 +14,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { createModelCapabilities } from "@t3tools/shared/model";
@@ -21,6 +22,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import {
   buildSelectOptionDescriptor,
   buildServerProvider,
+  collectStreamAsString,
   DEFAULT_TIMEOUT_MS,
   detailFromResult,
   isCommandMissingCause,
@@ -240,6 +242,80 @@ const runPiCommand = Effect.fn("runPiCommand")(function* (
   return yield* spawnAndCollect(piSettings.binaryPath || "pi", command);
 });
 
+interface RpcSlashCommand {
+  readonly name: string;
+  readonly description?: string;
+  readonly source: "extension" | "prompt" | "skill";
+}
+
+const PI_RPC_PROBE_TIMEOUT_MS = 8_000;
+
+function parseRpcCommandsResponse(line: string): ReadonlyArray<RpcSlashCommand> | null {
+  // eslint-disable-next-line no-restricted-syntax -- parsing external RPC JSON
+  let msg: Record<string, unknown>;
+  try {
+    msg = JSON.parse(line) as Record<string, unknown>; // @effect-diagnostics-ignore preferSchemaOverJson
+  } catch {
+    return null;
+  }
+  if (
+    msg["type"] === "response" &&
+    msg["command"] === "get_commands" &&
+    msg["success"] === true
+  ) {
+    const data = msg["data"] as { commands?: unknown[] } | undefined;
+    if (Array.isArray(data?.commands)) {
+      return data.commands.filter(
+        (c): c is RpcSlashCommand =>
+          typeof c === "object" &&
+          c !== null &&
+          typeof (c as Record<string, unknown>)["name"] === "string",
+      );
+    }
+  }
+  return null;
+}
+
+const probePiRpcCommands = Effect.fn("probePiRpcCommands")(function* (
+  piSettings: PiSettings,
+  cwd: string,
+  environment: NodeJS.ProcessEnv,
+): Effect.fn.Return<
+  ReadonlyArray<RpcSlashCommand>,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+> {
+  const piEnvironment = yield* makePiEnvironment(piSettings, environment);
+  const binaryPath = piSettings.binaryPath || "pi";
+
+  const command = ChildProcess.make(binaryPath, ["--mode", "rpc"], {
+    env: piEnvironment,
+    cwd,
+    shell: false,
+  });
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const child = yield* spawner.spawn(command);
+
+      const requestPayload = `{"type":"get_commands","id":"probe"}\n`;
+      yield* Stream.make(new TextEncoder().encode(requestPayload)).pipe(Stream.run(child.stdin));
+
+      const stdout = yield* collectStreamAsString(child.stdout);
+
+      const commands: RpcSlashCommand[] = [];
+      for (const line of stdout.split("\n")) {
+        const parsed = parseRpcCommandsResponse(line.trim());
+        if (parsed) {
+          commands.push(...parsed);
+          break;
+        }
+      }
+      return commands as ReadonlyArray<RpcSlashCommand>;
+    }),
+  ).pipe(Effect.orElseSucceed(() => [] as ReadonlyArray<RpcSlashCommand>));
+});
+
 const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
 
 function parseSkillFrontmatter(content: string): {
@@ -359,6 +435,7 @@ export type PiCapabilitiesProbe = {
     { readonly message: string }
   >;
   readonly skills: ReadonlyArray<ServerProviderSkill>;
+  readonly rpcCommands: ReadonlyArray<RpcSlashCommand>;
 };
 
 export const probePiCapabilities = Effect.fn("probePiCapabilities")(function* (
@@ -370,7 +447,7 @@ export const probePiCapabilities = Effect.fn("probePiCapabilities")(function* (
   never,
   ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
 > {
-  const [versionResult, skills] = yield* Effect.all(
+  const [versionResult, skills, rpcCommands] = yield* Effect.all(
     [
       runPiCommand(piSettings, ["--version"], environment).pipe(
         Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -379,10 +456,15 @@ export const probePiCapabilities = Effect.fn("probePiCapabilities")(function* (
       discoverPiSkills(cwd, piSettings).pipe(
         Effect.orElseSucceed(() => [] as ServerProviderSkill[]),
       ),
+      probePiRpcCommands(piSettings, cwd, environment).pipe(
+        Effect.timeoutOption(PI_RPC_PROBE_TIMEOUT_MS),
+        Effect.map((opt) => (Option.isSome(opt) ? opt.value : [])),
+        Effect.orElseSucceed(() => [] as ReadonlyArray<RpcSlashCommand>),
+      ),
     ],
     { concurrency: "unbounded" },
   );
-  return { versionResult, skills };
+  return { versionResult, skills, rpcCommands };
 });
 
 export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function* (
@@ -416,7 +498,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     });
   }
 
-  const { versionResult: versionProbe, skills } = yield* resolveProbe();
+  const { versionResult: versionProbe, skills, rpcCommands } = yield* resolveProbe();
 
   if (Result.isFailure(versionProbe)) {
     const error = versionProbe.failure;
@@ -473,13 +555,32 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     });
   }
 
+  const seen = new Set<string>();
   const slashCommands: ServerProviderSlashCommand[] = [
     { name: "compact", description: "Manually compact the session context" },
-    ...skills.map((skill) => ({
-      name: `skill:${skill.name}`,
-      description: skill.description ?? `Run ${skill.displayName ?? skill.name} skill`,
-    })),
   ];
+  seen.add("compact");
+
+  for (const cmd of rpcCommands) {
+    if (!seen.has(cmd.name)) {
+      seen.add(cmd.name);
+      slashCommands.push({
+        name: cmd.source === "skill" ? `skill:${cmd.name}` : cmd.name,
+        ...(cmd.description ? { description: cmd.description } : {}),
+      });
+    }
+  }
+
+  for (const skill of skills) {
+    const key = `skill:${skill.name}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      slashCommands.push({
+        name: key,
+        description: skill.description ?? `Run ${skill.displayName ?? skill.name} skill`,
+      });
+    }
+  }
 
   return buildServerProvider({
     presentation: PI_PRESENTATION,
