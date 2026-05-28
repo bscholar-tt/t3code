@@ -17,6 +17,7 @@ import {
   type UserInputQuestion,
 } from "@t3tools/contracts";
 import { parseCliArgs } from "@t3tools/shared/cliArgs";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -875,7 +876,14 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       spawnArgs.push("--session", piResumeState.sessionFile);
     }
     if (modelSelection?.model) {
-      spawnArgs.push("--model", modelSelection.model);
+      // If the model has a `contextWindow` option selected (e.g. "1m" or "300k"),
+      // append it as `@<value>` so Pi receives the fully-qualified model slug
+      // (e.g. `cursor/claude-opus-4-7@1m`). Plain models pass through unchanged.
+      const contextWindow = getModelSelectionStringOptionValue(modelSelection, "contextWindow");
+      const effectiveModel = contextWindow
+        ? `${modelSelection.model}@${contextWindow}`
+        : modelSelection.model;
+      spawnArgs.push("--model", effectiveModel);
     }
     // User-configured extra args (e.g. `--thinking high`) are appended last so
     // they can override defaults set above when Pi's CLI does last-wins parsing.
@@ -1145,7 +1153,17 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         .pipe(Effect.catchDefect(() => completeTurn(context, "failed", "Compaction failed.")));
       yield* completeTurn(context, "completed");
     } else {
-      const promptText = rawPromptText.replace(/^\$([a-zA-Z][\w:.-]*)/, "/skill:$1");
+      const rawSkillText = rawPromptText.replace(/^\$([a-zA-Z][\w:.-]*)/, "/skill:$1");
+      const promptText =
+        input.interactionMode === "plan"
+          ? `<t3code_plan_mode>
+You are in Plan Mode. Explore, research, and reason about the task, but do NOT write or modify any files or run side-effectful commands.
+
+When you have gathered enough context to propose a complete plan, call the set_plan tool with the full plan as markdown. Include a clear title and numbered steps. Call set_plan exactly once per turn — only when the plan is ready for user review. Do not implement the plan yourself.
+</t3code_plan_mode>
+
+${rawSkillText}`
+          : rawSkillText;
       yield* context
         .writeCommand({
           type: "prompt",

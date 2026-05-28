@@ -96,29 +96,47 @@ export function parsePiListModelsOutput(stdout: string): ReadonlyArray<{
   return results;
 }
 
-/** Build the thinking-enabled `ModelCapabilities` descriptor for discovered models. */
-function buildThinkingCapabilities(): ModelCapabilities {
-  return createModelCapabilities({
-    optionDescriptors: [
-      buildSelectOptionDescriptor({
-        id: "thinking",
-        label: "Thinking",
-        options: [
-          { value: "off", label: "Off" },
-          { value: "low", label: "Low" },
-          { value: "medium", label: "Medium", isDefault: true },
-          { value: "high", label: "High" },
-        ],
-      }),
+/** Build the thinking select option descriptor (OFF / Low / Medium / High). */
+function buildThinkingOptionDescriptor() {
+  return buildSelectOptionDescriptor({
+    id: "thinking",
+    label: "Thinking",
+    options: [
+      { value: "off", label: "Off" },
+      { value: "low", label: "Low" },
+      { value: "medium", label: "Medium", isDefault: true },
+      { value: "high", label: "High" },
     ],
   });
 }
 
+/** Build `ModelCapabilities` for a model that supports only thinking (no context variants). */
+function buildThinkingCapabilities(): ModelCapabilities {
+  return createModelCapabilities({ optionDescriptors: [buildThinkingOptionDescriptor()] });
+}
+
 /**
- * Discover Pi models dynamically by running `pi --list-models`. Returns every
- * model reported by the CLI using `provider/model` slugs (e.g.
- * `anthropic/claude-sonnet-4-6`, `cursor/claude-sonnet-4-6@1m`). The list is
- * authoritative — nothing is hardcoded in t3code.
+ * Parse a context-size variant string (e.g. `"1m"`, `"300k"`, `"200k"`) into
+ * a comparable numeric value so variants can be sorted largest-first.
+ */
+function parseContextSizeValue(variant: string): number {
+  const lower = variant.toLowerCase();
+  const num = parseFloat(lower);
+  if (lower.endsWith("m")) return num * 1_000_000;
+  if (lower.endsWith("k")) return num * 1_000;
+  return num || 0;
+}
+
+/**
+ * Discover Pi models dynamically by running `pi --list-models`.
+ *
+ * Models whose slugs share a base name but differ only by a `@contextsize`
+ * suffix (e.g. `claude-opus-4-7@1m` / `claude-opus-4-7@300k`) are grouped
+ * under a single entry with a `contextWindow` select descriptor. Models with
+ * only one context variant are also collapsed to their base slug but carry no
+ * selector (the `@`-suffix is embedded as the display name is stripped).
+ *
+ * All other models use `provider/model` slugs directly.
  */
 const discoverPiModels = Effect.fn("discoverPiModels")(function* (
   piSettings: PiSettings,
@@ -142,14 +160,81 @@ const discoverPiModels = Effect.fn("discoverPiModels")(function* (
 
   // `pi --list-models` writes its table to stderr, not stdout.
   const rows = parsePiListModelsOutput(commandResult.stderr);
-  const thinkingCaps = buildThinkingCapabilities();
+  const models: ServerProviderModel[] = [];
 
-  return rows.map((row) => ({
-    slug: `${row.provider}/${row.model}`,
-    name: `${row.provider}/${row.model}`,
-    isCustom: false,
-    capabilities: row.thinking ? thinkingCaps : DEFAULT_PI_MODEL_CAPABILITIES,
-  }));
+  // Separate rows into plain models (no @) and variant groups (@contextsize).
+  type VariantRow = { provider: string; model: string; thinking: boolean; variant: string };
+  const variantGroups = new Map<string, VariantRow[]>();
+
+  for (const row of rows) {
+    const atIdx = row.model.indexOf("@");
+    if (atIdx !== -1) {
+      const base = row.model.slice(0, atIdx);
+      const variant = row.model.slice(atIdx + 1);
+      const groupKey = `${row.provider}/${base}`;
+      let group = variantGroups.get(groupKey);
+      if (!group) {
+        group = [];
+        variantGroups.set(groupKey, group);
+      }
+      group.push({ ...row, variant });
+    } else {
+      // Plain model — emit directly.
+      models.push({
+        slug: `${row.provider}/${row.model}`,
+        name: `${row.provider}/${row.model}`,
+        isCustom: false,
+        capabilities: row.thinking ? buildThinkingCapabilities() : DEFAULT_PI_MODEL_CAPABILITIES,
+      });
+    }
+  }
+
+  // Emit one entry per variant group.
+  for (const [groupSlug, variants] of variantGroups) {
+    // Sort largest context first; that variant becomes the default.
+    const sorted = variants.toSorted(
+      (a, b) => parseContextSizeValue(b.variant) - parseContextSizeValue(a.variant),
+    );
+    const hasThinking = sorted.some((v) => v.thinking);
+
+    if (sorted.length === 1) {
+      // Single variant: collapse to base slug for display; bake @variant into
+      // the slug itself so the Pi CLI receives the correct model identifier.
+      const v = sorted[0];
+      if (!v) continue;
+      models.push({
+        slug: `${v.provider}/${v.model}@${v.variant}`,
+        name: groupSlug, // display without @-suffix
+        isCustom: false,
+        capabilities: hasThinking ? buildThinkingCapabilities() : DEFAULT_PI_MODEL_CAPABILITIES,
+      });
+    } else {
+      // Multiple variants: expose as a single entry with a `contextWindow`
+      // select option. PiAdapter reads the selection and appends `@<value>`
+      // to the slug before passing it to the Pi CLI.
+      const contextOptions = sorted.map((v, i) => ({
+        value: v.variant,
+        label: v.variant.toUpperCase(),
+        isDefault: i === 0,
+      }));
+      const optionDescriptors = [
+        ...(hasThinking ? [buildThinkingOptionDescriptor()] : []),
+        buildSelectOptionDescriptor({
+          id: "contextWindow",
+          label: "Context",
+          options: contextOptions,
+        }),
+      ];
+      models.push({
+        slug: groupSlug,
+        name: groupSlug,
+        isCustom: false,
+        capabilities: createModelCapabilities({ optionDescriptors }),
+      });
+    }
+  }
+
+  return models;
 });
 
 /**
