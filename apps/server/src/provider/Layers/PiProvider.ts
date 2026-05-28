@@ -202,8 +202,10 @@ const discoverPiModels = Effect.fn("discoverPiModels")(function* (
       // the slug itself so the Pi CLI receives the correct model identifier.
       const v = sorted[0];
       if (!v) continue;
+      // groupSlug is already `provider/base` (no @); append the single
+      // variant so the Pi CLI gets the correct fully-qualified slug.
       models.push({
-        slug: `${v.provider}/${v.model}@${v.variant}`,
+        slug: `${groupSlug}@${v.variant}`,
         name: groupSlug, // display without @-suffix
         isCustom: false,
         capabilities: hasThinking ? buildThinkingCapabilities() : DEFAULT_PI_MODEL_CAPABILITIES,
