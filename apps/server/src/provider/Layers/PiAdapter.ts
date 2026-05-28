@@ -1142,9 +1142,7 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       const customInstructions = trimmed.slice("/compact".length).trim() || undefined;
       yield* context
         .writeCommand({ type: "compact", ...(customInstructions ? { customInstructions } : {}) })
-        .pipe(
-          Effect.catchDefect(() => completeTurn(context, "failed", "Compaction failed.")),
-        );
+        .pipe(Effect.catchDefect(() => completeTurn(context, "failed", "Compaction failed.")));
     } else {
       const promptText = rawPromptText.replace(/^\$([a-zA-Z][\w:.-]*)/, "/skill:$1");
       yield* context

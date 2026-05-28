@@ -258,11 +258,7 @@ function parseRpcCommandsResponse(line: string): ReadonlyArray<RpcSlashCommand> 
   } catch {
     return null;
   }
-  if (
-    msg["type"] === "response" &&
-    msg["command"] === "get_commands" &&
-    msg["success"] === true
-  ) {
+  if (msg["type"] === "response" && msg["command"] === "get_commands" && msg["success"] === true) {
     const data = msg["data"] as { commands?: unknown[] } | undefined;
     if (Array.isArray(data?.commands)) {
       return data.commands.filter(
