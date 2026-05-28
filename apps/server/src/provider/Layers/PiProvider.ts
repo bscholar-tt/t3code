@@ -558,22 +558,12 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   seen.add("compact");
 
   for (const cmd of rpcCommands) {
+    if (cmd.source === "skill") continue;
     if (!seen.has(cmd.name)) {
       seen.add(cmd.name);
       slashCommands.push({
         name: cmd.name,
         ...(cmd.description ? { description: cmd.description } : {}),
-      });
-    }
-  }
-
-  for (const skill of skills) {
-    const key = `skill:${skill.name}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      slashCommands.push({
-        name: key,
-        description: skill.description ?? `Run ${skill.displayName ?? skill.name} skill`,
       });
     }
   }
