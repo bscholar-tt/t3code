@@ -6,6 +6,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 import type * as Electron from "electron";
+import { vi } from "vitest";
+
+vi.mock("electron", () => ({}));
 
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";

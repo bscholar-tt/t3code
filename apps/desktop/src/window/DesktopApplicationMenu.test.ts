@@ -6,6 +6,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import type * as Electron from "electron";
+import { vi } from "vitest";
+
+vi.mock("electron", () => ({}));
 
 import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as ElectronDialog from "../electron/ElectronDialog.ts";
