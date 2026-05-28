@@ -12,7 +12,7 @@ export function maybeFireDesktopNotification(
   previous: SidebarThreadSummary | undefined,
   next: SidebarThreadSummary,
 ): void {
-  const bridge = window.desktopBridge;
+  const bridge = typeof window !== "undefined" ? window.desktopBridge : undefined;
   if (!bridge?.showDesktopNotification) return;
 
   const settings = getClientSettings();
