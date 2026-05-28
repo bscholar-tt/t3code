@@ -57,11 +57,19 @@ function deriveNotification(
     return { title: "Error", body: threadLabel };
   }
 
-  if (settings.desktopNotifyOnInputNeeded && next.hasPendingApprovals && !previous?.hasPendingApprovals) {
+  if (
+    settings.desktopNotifyOnInputNeeded &&
+    next.hasPendingApprovals &&
+    !previous?.hasPendingApprovals
+  ) {
     return { title: "Approval needed", body: threadLabel };
   }
 
-  if (settings.desktopNotifyOnInputNeeded && next.hasPendingUserInput && !previous?.hasPendingUserInput) {
+  if (
+    settings.desktopNotifyOnInputNeeded &&
+    next.hasPendingUserInput &&
+    !previous?.hasPendingUserInput
+  ) {
     return { title: "Input needed", body: threadLabel };
   }
 
