@@ -4,6 +4,7 @@ import {
   type ServerProvider,
   type ServerProviderModel,
   type ServerProviderSkill,
+  type ServerProviderSlashCommand,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -450,11 +451,20 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     Effect.orElseSucceed(() => [] as ServerProviderSkill[]),
   );
 
+  const slashCommands: ServerProviderSlashCommand[] = [
+    { name: "compact", description: "Manually compact the session context" },
+    ...skills.map((skill) => ({
+      name: `skill:${skill.name}`,
+      description: skill.description ?? `Run ${skill.displayName ?? skill.name} skill`,
+    })),
+  ];
+
   return buildServerProvider({
     presentation: PI_PRESENTATION,
     enabled: piSettings.enabled,
     checkedAt,
     models: customOnlyModels,
+    slashCommands,
     skills,
     probe: {
       installed: true,

@@ -288,7 +288,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
         if (!context.turnState) {
           const turnId = TurnId.make(yield* Random.nextUUIDv4);
           const startedAt = yield* nowIso;
-          context.turnState = { turnId, startedAt, items: [], activeTextItemId: undefined, activeReasoningItemId: undefined };
+          context.turnState = {
+            turnId,
+            startedAt,
+            items: [],
+            activeTextItemId: undefined,
+            activeReasoningItemId: undefined,
+          };
           const updatedAt = yield* nowIso;
           context.session = {
             ...context.session,
@@ -711,7 +717,13 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
 
     const turnId = TurnId.make(yield* Random.nextUUIDv4);
     const turnStartedAt = yield* nowIso;
-    context.turnState = { turnId, startedAt: turnStartedAt, items: [], activeTextItemId: undefined, activeReasoningItemId: undefined };
+    context.turnState = {
+      turnId,
+      startedAt: turnStartedAt,
+      items: [],
+      activeTextItemId: undefined,
+      activeReasoningItemId: undefined,
+    };
     context.session = {
       ...context.session,
       status: "running",
@@ -731,21 +743,38 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
       providerRefs: {},
     });
 
-    const promptText = typeof input.input === "string" ? input.input : "";
+    const rawPromptText = typeof input.input === "string" ? input.input : "";
 
     const runtimeContext = yield* Effect.context<never>();
     const runFork = Effect.runForkWith(runtimeContext);
-    runFork(
-      Effect.tryPromise({
-        try: () => context.piSession.prompt(promptText),
-        catch: (cause) =>
-          new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "turn/prompt",
-            detail: toMessage(cause, "Failed to send prompt to Pi Agent."),
-          }),
-      }).pipe(Effect.catch(() => completeTurn(context, "failed", "Prompt failed."))),
-    );
+
+    if (rawPromptText.trim() === "/compact" || rawPromptText.trim().startsWith("/compact ")) {
+      const customInstructions = rawPromptText.trim().slice("/compact".length).trim() || undefined;
+      runFork(
+        Effect.tryPromise({
+          try: () => context.piSession.compact(customInstructions),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/compact",
+              detail: toMessage(cause, "Failed to compact Pi Agent session."),
+            }),
+        }).pipe(Effect.catch(() => completeTurn(context, "failed", "Compaction failed."))),
+      );
+    } else {
+      const promptText = rawPromptText.replace(/^\$([a-zA-Z][\w:.-]*)/, "/skill:$1");
+      runFork(
+        Effect.tryPromise({
+          try: () => context.piSession.prompt(promptText),
+          catch: (cause) =>
+            new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/prompt",
+              detail: toMessage(cause, "Failed to send prompt to Pi Agent."),
+            }),
+        }).pipe(Effect.catch(() => completeTurn(context, "failed", "Prompt failed."))),
+      );
+    }
 
     return {
       threadId: context.session.threadId,
