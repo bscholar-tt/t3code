@@ -1,16 +1,19 @@
 import {
   type PiSettings,
   type ModelCapabilities,
+  type ServerProvider,
   type ServerProviderModel,
   type ServerProviderSkill,
   ProviderDriverKind,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
+import { HttpClient } from "effect/unstable/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { createModelCapabilities } from "@t3tools/shared/model";
 
@@ -25,6 +28,10 @@ import {
   spawnAndCollect,
   type ServerProviderDraft,
 } from "../providerSnapshot.ts";
+import {
+  enrichProviderSnapshotWithVersionAdvisory,
+  type ProviderMaintenanceCapabilities,
+} from "../providerMaintenance.ts";
 import { makePiEnvironment, resolvePiHomePath } from "../Drivers/PiHome.ts";
 
 const DEFAULT_PI_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
@@ -37,75 +44,186 @@ const PI_PRESENTATION = {
   showInteractionModeToggle: true,
 } as const;
 
-const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
-  {
-    slug: "claude-sonnet-4-6",
-    name: "Claude Sonnet 4.6",
-    isCustom: false,
-    capabilities: createModelCapabilities({
-      optionDescriptors: [
-        buildSelectOptionDescriptor({
-          id: "thinking",
-          label: "Thinking",
-          options: [
-            { value: "off", label: "Off" },
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium", isDefault: true },
-            { value: "high", label: "High" },
-            { value: "xhigh", label: "Extra High" },
-          ],
-        }),
-      ],
-    }),
-  },
-  {
-    slug: "claude-opus-4-7",
-    name: "Claude Opus 4.7",
-    isCustom: false,
-    capabilities: createModelCapabilities({
-      optionDescriptors: [
-        buildSelectOptionDescriptor({
-          id: "thinking",
-          label: "Thinking",
-          options: [
-            { value: "off", label: "Off" },
-            { value: "low", label: "Low" },
-            { value: "medium", label: "Medium" },
-            { value: "high", label: "High", isDefault: true },
-            { value: "xhigh", label: "Extra High" },
-          ],
-        }),
-      ],
-    }),
-  },
-  {
-    slug: "claude-haiku-4-5",
-    name: "Claude Haiku 4.5",
-    isCustom: false,
-    capabilities: createModelCapabilities({
-      optionDescriptors: [
-        buildSelectOptionDescriptor({
-          id: "thinking",
-          label: "Thinking",
-          options: [
-            { value: "off", label: "Off" },
-            { value: "low", label: "Low", isDefault: true },
-            { value: "medium", label: "Medium" },
-            { value: "high", label: "High" },
-          ],
-        }),
-      ],
-    }),
-  },
-];
-
-export function getPiModelCapabilities(model: string | null | undefined): ModelCapabilities {
-  const slug = model?.trim();
-  return (
-    BUILT_IN_MODELS.find((candidate) => candidate.slug === slug)?.capabilities ??
-    DEFAULT_PI_MODEL_CAPABILITIES
-  );
+/**
+ * Capabilities for any model whose slug is not otherwise known. Used as a
+ * safe fallback so callers never need to handle undefined.
+ */
+export function getPiModelCapabilities(_model: string | null | undefined): ModelCapabilities {
+  // Model capabilities are now discovered dynamically from `pi --list-models`
+  // and embedded directly in each `ServerProviderModel`. This function is
+  // retained for callers that need a fallback when the model isn't found in
+  // the live snapshot.
+  return DEFAULT_PI_MODEL_CAPABILITIES;
 }
+
+const PI_LIST_MODELS_TIMEOUT_MS = 12_000;
+
+/**
+ * Parse the tabular output of `pi --list-models` into structured model rows.
+ *
+ * Expected header + data format:
+ * ```
+ * provider   model                       context  max-out  thinking  images
+ * anthropic  claude-sonnet-4-6           1M       64K      yes       yes
+ * cursor     claude-sonnet-4-6@1m        1M       16.4K    yes       yes
+ * ```
+ */
+export function parsePiListModelsOutput(stdout: string): ReadonlyArray<{
+  readonly provider: string;
+  readonly model: string;
+  readonly thinking: boolean;
+}> {
+  const lines = stdout.split("\n");
+  const results: Array<{ provider: string; model: string; thinking: boolean }> = [];
+
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line || !line.trim()) continue;
+    // Columns are whitespace-separated; model names never contain spaces.
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 5) continue;
+    const provider = fields[0];
+    const model = fields[1];
+    // "thinking" is the 5th column (index 4)
+    const thinking = fields[4] === "yes";
+    if (!provider || !model) continue;
+    results.push({ provider, model, thinking });
+  }
+
+  return results;
+}
+
+/** Build the thinking-enabled `ModelCapabilities` descriptor for discovered models. */
+function buildThinkingCapabilities(): ModelCapabilities {
+  return createModelCapabilities({
+    optionDescriptors: [
+      buildSelectOptionDescriptor({
+        id: "thinking",
+        label: "Thinking",
+        options: [
+          { value: "off", label: "Off" },
+          { value: "low", label: "Low" },
+          { value: "medium", label: "Medium", isDefault: true },
+          { value: "high", label: "High" },
+        ],
+      }),
+    ],
+  });
+}
+
+/**
+ * Discover Pi models dynamically by running `pi --list-models`. Returns every
+ * model reported by the CLI using `provider/model` slugs (e.g.
+ * `anthropic/claude-sonnet-4-6`, `cursor/claude-sonnet-4-6@1m`). The list is
+ * authoritative — nothing is hardcoded in t3code.
+ */
+const discoverPiModels = Effect.fn("discoverPiModels")(function* (
+  piSettings: PiSettings,
+  environment: NodeJS.ProcessEnv,
+): Effect.fn.Return<
+  ReadonlyArray<ServerProviderModel>,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+> {
+  const result = yield* runPiCommand(piSettings, ["--list-models"], environment).pipe(
+    Effect.timeoutOption(PI_LIST_MODELS_TIMEOUT_MS),
+    Effect.result,
+  );
+
+  if (Result.isFailure(result) || Option.isNone(result.success)) {
+    return [];
+  }
+
+  const commandResult = result.success.value;
+  if (commandResult.code !== 0) return [];
+
+  const rows = parsePiListModelsOutput(commandResult.stdout);
+  const thinkingCaps = buildThinkingCapabilities();
+
+  return rows.map((row) => ({
+    slug: `${row.provider}/${row.model}`,
+    name: `${row.provider}/${row.model}`,
+    isCustom: false,
+    capabilities: row.thinking ? thinkingCaps : DEFAULT_PI_MODEL_CAPABILITIES,
+  }));
+});
+
+/**
+ * Background snapshot enrichment hook for the Pi Agent provider.
+ *
+ * Chains two passes:
+ * 1. Version-advisory enrichment (checks npm/Homebrew for updates).
+ * 2. Dynamic model discovery via `pi --list-models`, which surfaces cursor and
+ *    other provider models that become available after login without restarting
+ *    t3code.
+ *
+ * Mirrors the `enrichCursorSnapshot` pattern so both providers stay consistent.
+ */
+export const enrichPiSnapshot = (input: {
+  readonly settings: PiSettings;
+  readonly environment?: NodeJS.ProcessEnv;
+  readonly snapshot: ServerProvider;
+  readonly maintenanceCapabilities: ProviderMaintenanceCapabilities;
+  readonly publishSnapshot: (snapshot: ServerProvider) => Effect.Effect<void>;
+  readonly stampIdentity?: (snapshot: ServerProvider) => ServerProvider;
+  readonly httpClient: HttpClient.HttpClient;
+}): Effect.Effect<
+  void,
+  never,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+> => {
+  const { settings, snapshot, publishSnapshot } = input;
+  const stampIdentity = input.stampIdentity ?? ((value: ServerProvider) => value);
+  const environment = input.environment ?? process.env;
+
+  const enrichVersionAdvisory = enrichProviderSnapshotWithVersionAdvisory(
+    snapshot,
+    input.maintenanceCapabilities,
+  ).pipe(
+    Effect.provideService(HttpClient.HttpClient, input.httpClient),
+    Effect.flatMap((enrichedSnapshot) =>
+      publishSnapshot(stampIdentity(enrichedSnapshot)).pipe(Effect.as(enrichedSnapshot)),
+    ),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Pi version advisory enrichment failed", {
+        cause: Cause.pretty(cause),
+      }).pipe(Effect.as(snapshot)),
+    ),
+  );
+
+  return enrichVersionAdvisory.pipe(
+    Effect.flatMap((baseSnapshot) => {
+      if (!settings.enabled || !baseSnapshot.installed) {
+        return Effect.void;
+      }
+
+      return discoverPiModels(settings, environment).pipe(
+        Effect.flatMap((discoveredModels) => {
+          if (discoveredModels.length === 0) return Effect.void;
+
+          const models = providerModelsFromSettings(
+            discoveredModels,
+            PROVIDER,
+            settings.customModels,
+            DEFAULT_PI_MODEL_CAPABILITIES,
+          );
+
+          return publishSnapshot(
+            stampIdentity({
+              ...baseSnapshot,
+              models,
+            }),
+          );
+        }),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Pi model discovery failed", {
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.asVoid),
+        ),
+      );
+    }),
+  );
+};
 
 const runPiCommand = Effect.fn("runPiCommand")(function* (
   piSettings: PiSettings,
@@ -150,11 +268,7 @@ function skillNameFromPath(filePath: string, pathSep: string): string {
 const scanSkillDir = Effect.fn("scanSkillDir")(function* (
   dir: string,
   scope: string,
-): Effect.fn.Return<
-  ServerProviderSkill[],
-  never,
-  FileSystem.FileSystem | Path.Path
-> {
+): Effect.fn.Return<ServerProviderSkill[], never, FileSystem.FileSystem | Path.Path> {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const skills: ServerProviderSkill[] = [];
@@ -173,9 +287,7 @@ const scanSkillDir = Effect.fn("scanSkillDir")(function* (
       const skillMdPath = path.join(entryPath, "SKILL.md");
       const hasSkillMd = yield* fs.exists(skillMdPath).pipe(Effect.orElseSucceed(() => false));
       if (hasSkillMd) {
-        const content = yield* fs.readFileString(skillMdPath).pipe(
-          Effect.orElseSucceed(() => ""),
-        );
+        const content = yield* fs.readFileString(skillMdPath).pipe(Effect.orElseSucceed(() => ""));
         const frontmatter = parseSkillFrontmatter(content);
         const name = frontmatter.name ?? entry;
         skills.push({
@@ -191,9 +303,7 @@ const scanSkillDir = Effect.fn("scanSkillDir")(function* (
     }
 
     if (entry.endsWith(".md")) {
-      const content = yield* fs.readFileString(entryPath).pipe(
-        Effect.orElseSucceed(() => ""),
-      );
+      const content = yield* fs.readFileString(entryPath).pipe(Effect.orElseSucceed(() => ""));
       const frontmatter = parseSkillFrontmatter(content);
       const name = frontmatter.name ?? skillNameFromPath(entry, path.sep);
       skills.push({
@@ -213,11 +323,7 @@ const scanSkillDir = Effect.fn("scanSkillDir")(function* (
 const discoverPiSkills = Effect.fn("discoverPiSkills")(function* (
   cwd: string,
   piSettings: PiSettings,
-): Effect.fn.Return<
-  ReadonlyArray<ServerProviderSkill>,
-  never,
-  FileSystem.FileSystem | Path.Path
-> {
+): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
   const path = yield* Path.Path;
   const piHomePath = yield* resolvePiHomePath(piSettings);
 
@@ -255,8 +361,10 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
 > {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
-  const allModels = providerModelsFromSettings(
-    BUILT_IN_MODELS,
+  // Models are populated by the background `enrichPiSnapshot` pass via
+  // `pi --list-models`; use an empty list here to avoid stale hardcoded data.
+  const customOnlyModels = providerModelsFromSettings(
+    [],
     PROVIDER,
     piSettings.customModels,
     DEFAULT_PI_MODEL_CAPABILITIES,
@@ -267,7 +375,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       presentation: PI_PRESENTATION,
       enabled: false,
       checkedAt,
-      models: allModels,
+      models: customOnlyModels,
       probe: {
         installed: false,
         version: null,
@@ -289,7 +397,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       presentation: PI_PRESENTATION,
       enabled: piSettings.enabled,
       checkedAt,
-      models: allModels,
+      models: customOnlyModels,
       probe: {
         installed: !isCommandMissingCause(error),
         version: null,
@@ -307,7 +415,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       presentation: PI_PRESENTATION,
       enabled: piSettings.enabled,
       checkedAt,
-      models: allModels,
+      models: customOnlyModels,
       probe: {
         installed: true,
         version: null,
@@ -327,7 +435,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       presentation: PI_PRESENTATION,
       enabled: piSettings.enabled,
       checkedAt,
-      models: allModels,
+      models: customOnlyModels,
       probe: {
         installed: true,
         version: parsedVersion,
@@ -346,7 +454,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     presentation: PI_PRESENTATION,
     enabled: piSettings.enabled,
     checkedAt,
-    models: allModels,
+    models: customOnlyModels,
     skills,
     probe: {
       installed: true,
@@ -360,8 +468,8 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
 export const makePendingPiProvider = (piSettings: PiSettings): Effect.Effect<ServerProviderDraft> =>
   Effect.gen(function* () {
     const checkedAt = yield* nowIso;
-    const models = providerModelsFromSettings(
-      BUILT_IN_MODELS,
+    const customOnlyModels = providerModelsFromSettings(
+      [],
       PROVIDER,
       piSettings.customModels,
       DEFAULT_PI_MODEL_CAPABILITIES,
@@ -372,7 +480,7 @@ export const makePendingPiProvider = (piSettings: PiSettings): Effect.Effect<Ser
         presentation: PI_PRESENTATION,
         enabled: false,
         checkedAt,
-        models,
+        models: customOnlyModels,
         probe: {
           installed: false,
           version: null,
@@ -387,7 +495,7 @@ export const makePendingPiProvider = (piSettings: PiSettings): Effect.Effect<Ser
       presentation: PI_PRESENTATION,
       enabled: true,
       checkedAt,
-      models,
+      models: customOnlyModels,
       probe: {
         installed: false,
         version: null,

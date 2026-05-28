@@ -12,7 +12,11 @@ import { makePiTextGeneration } from "../../textGeneration/PiTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makePiAdapter } from "../Layers/PiAdapter.ts";
-import { checkPiProviderStatus, makePendingPiProvider } from "../Layers/PiProvider.ts";
+import {
+  checkPiProviderStatus,
+  enrichPiSnapshot,
+  makePendingPiProvider,
+} from "../Layers/PiProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -23,7 +27,6 @@ import {
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import {
-  enrichProviderSnapshotWithVersionAdvisory,
   makePackageManagedProviderMaintenanceResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
@@ -126,9 +129,18 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
           makePendingPiProvider(settings).pipe(Effect.map(stampIdentity)),
         checkProvider,
         enrichSnapshot: ({ snapshot, publishSnapshot }) =>
-          enrichProviderSnapshotWithVersionAdvisory(snapshot, maintenanceCapabilities).pipe(
-            Effect.provideService(HttpClient.HttpClient, httpClient),
-            Effect.flatMap((enrichedSnapshot) => publishSnapshot(enrichedSnapshot)),
+          enrichPiSnapshot({
+            settings: effectiveConfig,
+            environment: processEnv,
+            snapshot,
+            maintenanceCapabilities,
+            publishSnapshot,
+            stampIdentity,
+            httpClient,
+          }).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
           ),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
