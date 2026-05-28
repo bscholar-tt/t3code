@@ -246,6 +246,7 @@ interface RpcSlashCommand {
   readonly name: string;
   readonly description?: string;
   readonly source: "extension" | "prompt" | "skill";
+  readonly sourceInfo?: { readonly path?: string; readonly scope?: string };
 }
 
 const PI_RPC_PROBE_TIMEOUT_MS = 8_000;
@@ -557,8 +558,23 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
   ];
   seen.add("compact");
 
+  const skillNames = new Set(skills.map((s) => s.name));
+  const allSkills = [...skills];
+
   for (const cmd of rpcCommands) {
-    if (cmd.source === "skill") continue;
+    if (cmd.source === "skill") {
+      if (!skillNames.has(cmd.name)) {
+        skillNames.add(cmd.name);
+        allSkills.push({
+          name: cmd.name,
+          path: cmd.sourceInfo?.path ?? cmd.name,
+          enabled: true,
+          ...(cmd.sourceInfo?.scope ? { scope: cmd.sourceInfo.scope } : {}),
+          ...(cmd.description ? { description: cmd.description } : {}),
+        });
+      }
+      continue;
+    }
     if (!seen.has(cmd.name)) {
       seen.add(cmd.name);
       slashCommands.push({
@@ -574,7 +590,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     checkedAt,
     models: customOnlyModels,
     slashCommands,
-    skills,
+    skills: allSkills,
     probe: {
       installed: true,
       version: parsedVersion,
