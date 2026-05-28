@@ -1136,14 +1136,25 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     });
 
     const rawPromptText = typeof input.input === "string" ? input.input : "";
+    const trimmed = rawPromptText.trim();
 
-    yield* context
-      .writeCommand({
-        type: "prompt",
-        message: rawPromptText,
-        ...(piImages.length > 0 ? { images: piImages } : {}),
-      })
-      .pipe(Effect.catchDefect(() => completeTurn(context, "failed", "Failed to send prompt.")));
+    if (trimmed === "/compact" || trimmed.startsWith("/compact ")) {
+      const customInstructions = trimmed.slice("/compact".length).trim() || undefined;
+      yield* context
+        .writeCommand({ type: "compact", ...(customInstructions ? { customInstructions } : {}) })
+        .pipe(
+          Effect.catchDefect(() => completeTurn(context, "failed", "Compaction failed.")),
+        );
+    } else {
+      const promptText = rawPromptText.replace(/^\$([a-zA-Z][\w:.-]*)/, "/skill:$1");
+      yield* context
+        .writeCommand({
+          type: "prompt",
+          message: promptText,
+          ...(piImages.length > 0 ? { images: piImages } : {}),
+        })
+        .pipe(Effect.catchDefect(() => completeTurn(context, "failed", "Failed to send prompt.")));
+    }
 
     return {
       threadId: context.session.threadId,
