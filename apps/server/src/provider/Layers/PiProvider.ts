@@ -352,15 +352,43 @@ const discoverPiSkills = Effect.fn("discoverPiSkills")(function* (
   return deduped;
 });
 
-export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function* (
+export type PiCapabilitiesProbe = {
+  readonly versionResult: Result.Result<
+    Option.Option<{ code: number; stdout: string; stderr: string }>,
+    { readonly message: string }
+  >;
+  readonly skills: ReadonlyArray<ServerProviderSkill>;
+};
+
+export const probePiCapabilities = Effect.fn("probePiCapabilities")(function* (
   piSettings: PiSettings,
   cwd: string,
-  environment: NodeJS.ProcessEnv = process.env,
+  environment: NodeJS.ProcessEnv,
 ): Effect.fn.Return<
-  ServerProviderDraft,
+  PiCapabilitiesProbe,
   never,
   ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
 > {
+  const [versionResult, skills] = yield* Effect.all(
+    [
+      runPiCommand(piSettings, ["--version"], environment).pipe(
+        Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+        Effect.result,
+      ),
+      discoverPiSkills(cwd, piSettings).pipe(
+        Effect.orElseSucceed(() => [] as ServerProviderSkill[]),
+      ),
+    ],
+    { concurrency: "unbounded" },
+  );
+  return { versionResult, skills };
+});
+
+export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function* (
+  piSettings: PiSettings,
+  resolveProbe: () => Effect.Effect<PiCapabilitiesProbe>,
+  environment: NodeJS.ProcessEnv = process.env,
+): Effect.fn.Return<ServerProviderDraft> {
   const checkedAt = DateTime.formatIso(yield* DateTime.now);
   // Models are populated by the background `enrichPiSnapshot` pass via
   // `pi --list-models`; use an empty list here to avoid stale hardcoded data.
@@ -387,10 +415,7 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
     });
   }
 
-  const versionProbe = yield* runPiCommand(piSettings, ["--version"], environment).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-    Effect.result,
-  );
+  const { versionResult: versionProbe, skills } = yield* resolveProbe();
 
   if (Result.isFailure(versionProbe)) {
     const error = versionProbe.failure;
@@ -446,10 +471,6 @@ export const checkPiProviderStatus = Effect.fn("checkPiProviderStatus")(function
       },
     });
   }
-
-  const skills = yield* discoverPiSkills(cwd, piSettings).pipe(
-    Effect.orElseSucceed(() => [] as ServerProviderSkill[]),
-  );
 
   const slashCommands: ServerProviderSlashCommand[] = [
     { name: "compact", description: "Manually compact the session context" },

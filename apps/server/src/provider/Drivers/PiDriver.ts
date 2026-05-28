@@ -1,4 +1,5 @@
 import { PiSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
+import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -16,6 +17,7 @@ import {
   checkPiProviderStatus,
   enrichPiSnapshot,
   makePendingPiProvider,
+  probePiCapabilities,
 } from "../Layers/PiProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -30,12 +32,13 @@ import {
   makePackageManagedProviderMaintenanceResolver,
   resolveProviderMaintenanceCapabilitiesEffect,
 } from "../providerMaintenance.ts";
-import { makePiContinuationGroupKey } from "./PiHome.ts";
+import { makePiCapabilitiesCacheKey, makePiContinuationGroupKey } from "./PiHome.ts";
 
 const decodePiSettings = Schema.decodeSync(PiSettings);
 
 const DRIVER_KIND = ProviderDriverKind.make("piAgent");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
+const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
 
 const UPDATE = makePackageManagedProviderMaintenanceResolver({
   provider: DRIVER_KIND,
@@ -109,16 +112,23 @@ export const PiDriver: ProviderDriver<PiSettings, PiDriverEnv> = {
       });
       const textGeneration = yield* makePiTextGeneration(effectiveConfig, processEnv);
 
+      const capabilitiesProbeCache = yield* Cache.make({
+        capacity: 1,
+        timeToLive: CAPABILITIES_PROBE_TTL,
+        lookup: () =>
+          probePiCapabilities(effectiveConfig, serverConfig.cwd, processEnv).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+          ),
+      });
+      const capabilitiesCacheKey = yield* makePiCapabilitiesCacheKey(effectiveConfig);
+
       const checkProvider = checkPiProviderStatus(
         effectiveConfig,
-        serverConfig.cwd,
+        () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
         processEnv,
-      ).pipe(
-        Effect.map(stampIdentity),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.provideService(Path.Path, path),
-      );
+      ).pipe(Effect.map(stampIdentity));
 
       const snapshot = yield* makeManagedServerProvider<PiSettings>({
         maintenanceCapabilities,
