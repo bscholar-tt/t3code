@@ -53,6 +53,27 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
     };
   }, [navigate]);
 
+  useEffect(() => {
+    const onNotificationNavigate = window.desktopBridge?.onNotificationNavigate;
+    if (typeof onNotificationNavigate !== "function") {
+      return;
+    }
+
+    const unsubscribe = onNotificationNavigate((payload) => {
+      void navigate({
+        to: "/$environmentId/$threadId",
+        params: {
+          environmentId: payload.environmentId,
+          threadId: payload.threadId,
+        },
+      });
+    });
+
+    return () => {
+      unsubscribe?.();
+    };
+  }, [navigate]);
+
   return (
     <SidebarProvider className="h-dvh! min-h-0!" defaultOpen>
       <Sidebar

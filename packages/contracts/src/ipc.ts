@@ -369,6 +369,21 @@ export const PickFolderOptionsSchema = Schema.Struct({
   initialPath: Schema.optionalKey(Schema.NullOr(Schema.String)),
 });
 
+export const DesktopNotificationPayloadSchema = Schema.Struct({
+  title: Schema.String,
+  body: Schema.String,
+  threadEnvironmentId: Schema.String,
+  threadId: Schema.String,
+});
+export type DesktopNotificationPayload = typeof DesktopNotificationPayloadSchema.Type;
+
+export const DesktopNotificationNavigatePayloadSchema = Schema.Struct({
+  environmentId: Schema.String,
+  threadId: Schema.String,
+});
+export type DesktopNotificationNavigatePayload =
+  typeof DesktopNotificationNavigatePayloadSchema.Type;
+
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
   getLocalEnvironmentBootstrap: () => DesktopEnvironmentBootstrap | null;
@@ -421,6 +436,10 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  showDesktopNotification: (payload: DesktopNotificationPayload) => Promise<void>;
+  onNotificationNavigate: (
+    listener: (payload: DesktopNotificationNavigatePayload) => void,
+  ) => () => void;
 }
 
 /**

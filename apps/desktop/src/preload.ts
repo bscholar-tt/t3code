@@ -124,4 +124,17 @@ contextBridge.exposeInMainWorld("desktopBridge", {
       ipcRenderer.removeListener(IpcChannels.UPDATE_STATE_CHANNEL, wrappedListener);
     };
   },
+  showDesktopNotification: (payload) =>
+    ipcRenderer.invoke(IpcChannels.SHOW_NOTIFICATION_CHANNEL, payload),
+  onNotificationNavigate: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+      if (typeof payload !== "object" || payload === null) return;
+      listener(payload as Parameters<typeof listener>[0]);
+    };
+
+    ipcRenderer.on(IpcChannels.NOTIFICATION_NAVIGATE_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.NOTIFICATION_NAVIGATE_CHANNEL, wrappedListener);
+    };
+  },
 } satisfies DesktopBridge);

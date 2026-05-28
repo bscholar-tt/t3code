@@ -27,6 +27,7 @@ import {
 } from "~/composerDraftStore";
 import { ensureLocalApi } from "~/localApi";
 import { collectActiveTerminalThreadIds } from "~/lib/terminalStateCleanup";
+import { maybeFireDesktopNotification } from "~/desktopNotifications";
 import { deriveOrchestrationBatchEffects } from "~/orchestrationEventEffects";
 import { projectQueryKeys } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
@@ -1048,7 +1049,11 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
         ? event.threadId
         : null;
   const threadRef = threadId ? scopeThreadRef(environmentId, threadId) : null;
-  const previousThread = threadRef ? selectThreadByRef(useStore.getState(), threadRef) : undefined;
+  const previousStoreState = useStore.getState();
+  const previousThread = threadRef ? selectThreadByRef(previousStoreState, threadRef) : undefined;
+  const previousSidebarSummary = threadRef
+    ? selectSidebarThreadSummaryByRef(previousStoreState, threadRef)
+    : undefined;
 
   useStore.getState().applyShellEvent(event, environmentId);
   markAppliedProjectionEvent(environmentId, event.sequence);
@@ -1068,6 +1073,17 @@ function applyShellEvent(event: OrchestrationShellStreamEvent, environmentId: En
       }
       reconcileThreadDetailSubscriptionEvictionForThread(environmentId, event.thread.id);
       evictIdleThreadDetailSubscriptionsToCapacity();
+      if (threadRef) {
+        const nextSidebarSummary = selectSidebarThreadSummaryByRef(useStore.getState(), threadRef);
+        if (nextSidebarSummary) {
+          maybeFireDesktopNotification(
+            environmentId,
+            event.thread.id,
+            previousSidebarSummary,
+            nextSidebarSummary,
+          );
+        }
+      }
       return;
     case "thread-removed":
       if (threadRef) {
