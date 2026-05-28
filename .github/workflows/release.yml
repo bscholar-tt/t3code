@@ -57,12 +57,30 @@ jobs:
             exit 1
           fi
 
+          # Anything with a `-` suffix (e.g. `1.2.3-beta.1`) is a pre-release
+          # in SemVer terms, so we must not promote it as the latest stable
+          # GitHub release. The regex above intentionally accepts these so
+          # contributors can dispatch beta/rc builds — the channel decision
+          # lives here, not in the validator.
+          #
+          # `release_channel` stays "stable" because that's what
+          # `resolve-previous-release-tag.ts` accepts (stable|nightly) and
+          # pre-releases still want to diff against the last stable tag for
+          # release notes. Only `is_prerelease` / `make_latest` change.
+          if [[ "$version" == *-* ]]; then
+            is_prerelease="true"
+            make_latest="false"
+          else
+            is_prerelease="false"
+            make_latest="true"
+          fi
+
           echo "release_channel=stable" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "name=T3 Code v$version" >> "$GITHUB_OUTPUT"
-          echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
-          echo "make_latest=true" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
+          echo "make_latest=$make_latest" >> "$GITHUB_OUTPUT"
 
       - name: Lint
         run: bun run lint
@@ -190,7 +208,13 @@ jobs:
         run: node scripts/update-release-package-versions.ts "${{ needs.preflight.outputs.version }}"
 
       - name: Build t3 server package
-        run: bun run build --filter=t3
+        # `turbo run build --filter=t3` (not `bun --filter=t3`) is what we want
+        # here: turbo respects the workspace dependency graph and builds the
+        # web client into apps/web/dist first, which `cli.ts build` then
+        # copies into apps/server/dist/client. `bun --filter=t3 run build`
+        # only runs t3's own script and skips the web build, leaving the
+        # subsequent `cli.ts pack` step without dist/client/index.html.
+        run: bunx turbo run build --filter=t3
 
       - name: Pack t3 CLI tarball
         run: |
@@ -222,6 +246,7 @@ jobs:
             release-assets/*.dmg
             release-assets/*.zip
             release-assets/*.AppImage
+            release-assets/*.blockmap
             release-assets/*.yml
             release-assets/*.tgz
           fail_on_unmatched_files: true
@@ -241,6 +266,7 @@ jobs:
             release-assets/*.dmg
             release-assets/*.zip
             release-assets/*.AppImage
+            release-assets/*.blockmap
             release-assets/*.yml
             release-assets/*.tgz
           fail_on_unmatched_files: true

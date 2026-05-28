@@ -138,7 +138,8 @@ const discoverPiModels = Effect.fn("discoverPiModels")(function* (
   const commandResult = result.success.value;
   if (commandResult.code !== 0) return [];
 
-  const rows = parsePiListModelsOutput(commandResult.stdout);
+  // `pi --list-models` writes its table to stderr, not stdout.
+  const rows = parsePiListModelsOutput(commandResult.stderr);
   const thinkingCaps = buildThinkingCapabilities();
 
   return rows.map((row) => ({

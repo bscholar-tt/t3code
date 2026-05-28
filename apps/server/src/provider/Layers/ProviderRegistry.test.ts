@@ -993,8 +993,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                   claudeAgent: { enabled: false },
                   cursor: { enabled: false },
                   opencode: { enabled: false },
+                  // Disable Pi too — a `pi --version` probe would still spawn
+                  // against the dev host's PATH and break the stated CI
+                  // isolation of this Codex-focused test.
                   piAgent: {
-                    enabled: true,
+                    enabled: false,
                     binaryPath: "",
                     homePath: "",
                     customModels: [],
@@ -1094,8 +1097,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, ServerSettingsService.layerTest(), T
                   claudeAgent: { enabled: false },
                   cursor: { enabled: false },
                   opencode: { enabled: false },
+                  // Disable Pi too — a `pi --version` probe would still spawn
+                  // against the dev host's PATH and break the stated CI
+                  // isolation of this Codex-focused test.
                   piAgent: {
-                    enabled: true,
+                    enabled: false,
                     binaryPath: "",
                     homePath: "",
                     customModels: [],
