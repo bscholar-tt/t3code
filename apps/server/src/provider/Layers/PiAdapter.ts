@@ -957,7 +957,20 @@ export const makePiAdapter = Effect.fn("makePiAdapter")(function* (
     const runFork = Effect.runForkWith(runtimeContext);
 
     // Fork stdin writer — continuously drains the outgoing queue to the process stdin
-    runFork(Stream.fromQueue(outgoingQueue).pipe(Stream.run(child.stdin), Effect.ignore));
+    runFork(
+      Stream.fromQueue(outgoingQueue).pipe(
+        Stream.run(child.stdin),
+        Effect.ignore,
+        Effect.ensuring(
+          Effect.suspend(() => {
+            if (!context.stopped && context.session.status !== "closed") {
+              return stopSessionInternal(context, { emitExitEvent: true });
+            }
+            return Effect.void;
+          }),
+        ),
+      ),
+    );
 
     // Fork stdout reader — parses JSONL events and routes them
     const stdoutFiber = runFork(
